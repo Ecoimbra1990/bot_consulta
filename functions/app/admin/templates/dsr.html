@@ -1,0 +1,19 @@
+{% extends "layout.html" %}
+{% block content %}
+<h2>Solicitações LGPD</h2>
+<table>
+  <tr><th>ID</th><th>Usuário</th><th>Criada em</th><th>Status</th><th>Ação</th></tr>
+  {% for item in requests %}
+  <tr>
+    <td>{{item.id}}</td><td>{{item.user_id}}</td><td>{{item.created_at}}</td><td>{{item.status}}</td>
+    <td>
+      <form class="inline" method="post" action="/admin/dsr/{{item.id}}/resolve">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" name="decision" value="approve">Excluir</button>
+        <button type="submit" name="decision" value="reject">Rejeitar</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}
