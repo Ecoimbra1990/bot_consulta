@@ -40,8 +40,9 @@ class Doc:
 class Repository:
     collection: str
 
-    def __init__(self):
-        self.db = get_db()
+    @property
+    def db(self):
+        return get_db()
 
     @property
     def col(self):
