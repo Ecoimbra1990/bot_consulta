@@ -76,7 +76,16 @@ interface BenefitRule {
   preferred: string[];
 }
 
-const PLATE_PREFERRED_SERVICES = [
+const BASIC_PLATE_SERVICES = [
+  'consulta-placa',
+  'placa-basica',
+  'fipe-placa',
+  'dados-veiculo',
+  'veiculo-por-placa',
+];
+
+const FULL_PLATE_SERVICES = [
+  'placa-completa',
   'roubo-furto-v2',
   'veicular-360',
   'alertas-e-historico-veiculo',
@@ -87,8 +96,8 @@ const BENEFIT_RULES: BenefitRule[] = [
   { canonicalKey: 'pf-cpf', preferred: ['dados-cadastrais'] },
   { canonicalKey: 'cnpj', preferred: ['cnpj'] },
   { canonicalKey: 'telefone', preferred: ['cpf-cnpj-pelo-telefone'] },
-  { canonicalKey: 'placa-basica', preferred: PLATE_PREFERRED_SERVICES },
-  { canonicalKey: 'placa-completa', preferred: PLATE_PREFERRED_SERVICES },
+  { canonicalKey: 'placa-basica', preferred: BASIC_PLATE_SERVICES },
+  { canonicalKey: 'placa-completa', preferred: FULL_PLATE_SERVICES },
   { canonicalKey: 'frota-cpf', preferred: ['frota-pf'] },
   { canonicalKey: 'renavam', preferred: ['frota-pf'] },
 ];
@@ -103,6 +112,9 @@ const SERVICE_ENDPOINTS: Record<string, string> = {
   'cadastro-pf-basico': config.apiBrasil.pfPath,
   'cpf-cadastral': config.apiBrasil.pfPath,
   'cpf-cnpj-pelo-telefone': config.apiBrasil.phonePath,
+  'fipe-placa': config.apiBrasil.vehiclePlatePath,
+  'consulta-placa': config.apiBrasil.vehiclePlatePath,
+  'placa-completa': config.apiBrasil.vehicleFullPath || config.apiBrasil.vehiclePlatePath,
   'roubo-furto-v2': config.apiBrasil.vehiclePlatePath,
   'veicular-360': config.apiBrasil.vehiclePlatePath,
 };
@@ -124,8 +136,11 @@ function canonicalModuleKey(...values: unknown[]): string {
       return slug;
     }
   }
-  if (/frota|renavam/.test(joined)) {
+  if (/frota/.test(joined)) {
     return 'frota-cpf';
+  }
+  if (/renavam/.test(joined) && !/placa|veiculo|chassi/.test(joined)) {
+    return 'renavam';
   }
   if (/veiculo|placa|chassi/.test(joined)) {
     return /roubo|furto|sinistro|leilao|recall|alerta|historico|complet|full|panorama/.test(joined)
@@ -300,17 +315,11 @@ export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
         const foundCost = deepFind(candidate, ['cost_cents', 'price_cents', 'preco_centavos', 'custo_centavos', 'cost', 'custo', 'price', 'preco', 'valor', 'value']);
         const costCents = foundCost ? parseMoney(foundCost.value, foundCost.key) ?? 0 : 0;
         const mappedKey = canonicalModuleKey(rawModuleKey, description, rawEndpoint);
-        if (!service || costCents <= 0 || (!mappedKey && service !== 'roubo-furto-v2')) {
+        if (!service || costCents <= 0 || !mappedKey) {
           skipped += 1;
           continue;
         }
-        const canonicalKeys = mappedKey === 'placa-completa'
-          ? ['placa-completa', 'placa-basica']
-          : mappedKey === 'roubo-furto-v2' || service === 'roubo-furto-v2'
-            ? ['placa-completa', 'placa-basica']
-            : mappedKey
-              ? [mappedKey]
-              : ['placa-completa', 'placa-basica'];
+        const canonicalKeys = mappedKey ? [mappedKey] : [];
 
         for (const moduleKey of canonicalKeys) {
           const rule = BENEFIT_RULES.find((item) => item.canonicalKey === moduleKey);
