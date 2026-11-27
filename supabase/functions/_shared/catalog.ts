@@ -1,7 +1,12 @@
 import { config } from './env.ts';
 import type { Row, Store } from './types.ts';
 
-function deepFind(value: unknown, keys: string[], depth = 0): unknown {
+interface FoundValue {
+  key: string;
+  value: unknown;
+}
+
+function deepFind(value: unknown, keys: string[], depth = 0): FoundValue | undefined {
   if (depth > 4 || value === null || value === undefined) {
     return undefined;
   }
@@ -20,7 +25,7 @@ function deepFind(value: unknown, keys: string[], depth = 0): unknown {
   const row = value as Row;
   for (const key of keys) {
     if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
-      return row[key];
+      return { key, value: row[key] };
     }
   }
   for (const nested of Object.values(row)) {
@@ -55,6 +60,49 @@ function parseMoney(value: unknown, key = ''): number | undefined {
 
 function text(value: unknown, fallback = ''): string {
   return value === null || value === undefined ? fallback : String(value).trim();
+}
+
+const CANONICAL_MODULE_KEYS = new Set(['pf-cpf', 'cnpj', 'telefone', 'placa-basica', 'placa-completa']);
+
+function slugify(value: unknown): string {
+  return text(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function canonicalModuleKey(value: unknown): string {
+  const slug = slugify(value);
+  if (!slug || slug.length > 80) {
+    return '';
+  }
+  if (CANONICAL_MODULE_KEYS.has(slug)) {
+    return slug;
+  }
+  if (/telefone|phone|celular/.test(slug)) {
+    return 'telefone';
+  }
+  if (/veiculo|placa|renavam/.test(slug)) {
+    return /complet|full|furto|roubo|renavam|historico/.test(slug) ? 'placa-completa' : 'placa-basica';
+  }
+  if (/cnpj|empresa|pessoa-juridica|(^|-)pj(-|$)/.test(slug)) {
+    return 'cnpj';
+  }
+  if (/cpf|(^|-)pf(-|$)|pessoa-fisica/.test(slug)) {
+    return 'pf-cpf';
+  }
+  return '';
+}
+
+function canonicalEndpoint(moduleKey: string): string {
+  if (moduleKey === 'pf-cpf') return config.apiBrasil.pfPath;
+  if (moduleKey === 'cnpj') return config.apiBrasil.companyPath;
+  if (moduleKey === 'telefone') return config.apiBrasil.phonePath;
+  if (moduleKey === 'placa-basica') return config.apiBrasil.vehiclePlatePath;
+  if (moduleKey === 'placa-completa') return config.apiBrasil.vehicleFullPath || config.apiBrasil.vehiclePlatePath;
+  return '';
 }
 
 function collectObjects(value: unknown, output: Row[] = [], depth = 0): Row[] {
@@ -107,16 +155,24 @@ export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
   const payload = await fetchJson(config.apiBrasil.catalogUrl);
   const candidates = collectObjects(payload);
   const alerts: string[] = [];
-  let modules = 0;
+  const selected = new Map<string, Row>();
   let skipped = 0;
 
+  const message = text(payload.message);
+  if (payload.error === true || /plano ativo|sem credito|sem saldo/i.test(message)) {
+    alerts.push(`APIBrasil: ${message || 'resposta indicando indisponibilidade'}`);
+  }
+
   for (const candidate of candidates) {
-    const endpoint = text(candidate.endpoint ?? candidate.path ?? candidate.url ?? candidate.rota ?? candidate.route ?? candidate.api);
-    const moduleKey = text(
-      candidate.module_key ?? candidate.key ?? candidate.slug ?? candidate.id ?? candidate.module ?? candidate.nome ?? candidate.name,
+    const rawEndpoint = text(candidate.endpoint ?? candidate.path ?? candidate.url ?? candidate.rota ?? candidate.route ?? candidate.api ?? candidate.search);
+    const rawModuleKey = text(
+      candidate.module_key ?? candidate.service_name ?? candidate.key ?? candidate.slug ?? candidate.id ?? candidate.module ?? candidate.nome ?? candidate.name,
     );
-    const costRaw = deepFind(candidate, ['cost_cents', 'price_cents', 'preco_centavos', 'custo_centavos', 'cost', 'custo', 'price', 'preco', 'valor']);
-    const costCents = parseMoney(costRaw, 'cost_cents') ?? 0;
+    const foundCost = deepFind(candidate, ['cost_cents', 'price_cents', 'preco_centavos', 'custo_centavos', 'cost', 'custo', 'price', 'preco', 'valor', 'value']);
+    const costCents = foundCost ? parseMoney(foundCost.value, foundCost.key) ?? 0 : 0;
+    const mappedKey = canonicalModuleKey(rawModuleKey) || canonicalModuleKey(rawEndpoint);
+    const moduleKey = mappedKey || rawModuleKey;
+    const endpoint = mappedKey ? canonicalEndpoint(mappedKey) || rawEndpoint : rawEndpoint;
     if (!endpoint || !moduleKey || costCents <= 0) {
       skipped += 1;
       continue;
@@ -125,18 +181,26 @@ export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
     if (priceCents <= costCents) {
       alerts.push(`Módulo ${moduleKey}: preço ${priceCents} não cobre custo ${costCents}`);
     }
-    await store.upsert('api_modules', {
-      module_key: moduleKey,
-      label: text(candidate.label ?? candidate.descricao ?? candidate.description ?? candidate.name ?? candidate.nome, moduleKey),
-      endpoint,
-      cost_cents: costCents,
-      balance_cents: null,
-      source: 'apibrasil',
-      payload_json: candidate,
-      updated_at: new Date().toISOString(),
-    }, 'module_key');
-    modules += 1;
+    const existing = selected.get(moduleKey);
+    if (!existing || costCents > Number(existing.cost_cents ?? 0)) {
+      selected.set(moduleKey, {
+        module_key: moduleKey,
+        label: text(candidate.label ?? candidate.descricao ?? candidate.description ?? candidate.name ?? candidate.nome ?? candidate.service_name, moduleKey),
+        endpoint,
+        cost_cents: costCents,
+        balance_cents: null,
+        source: 'apibrasil',
+        payload_json: candidate,
+        updated_at: new Date().toISOString(),
+      });
+    }
   }
+
+  for (const row of selected.values()) {
+    await store.upsert('api_modules', row, 'module_key');
+  }
+
+  const modules = selected.size;
 
   if (modules === 0) {
     alerts.push('Catálogo sincronizado sem módulos com custo positivo; consultas permanecerão bloqueadas');
@@ -146,8 +210,8 @@ export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
   if (config.apiBrasil.accountUrl) {
     try {
       const account = await fetchJson(config.apiBrasil.accountUrl);
-      const rawBalance = deepFind(account, ['balance_cents', 'saldo_centavos', 'credit_balance_cents', 'balance', 'saldo', 'creditos', 'credits']);
-      balanceCents = parseMoney(rawBalance, 'balance_cents') ?? null;
+      const foundBalance = deepFind(account, ['balance_cents', 'saldo_centavos', 'credit_balance_cents', 'balance', 'saldo', 'creditos', 'credits']);
+      balanceCents = foundBalance ? parseMoney(foundBalance.value, foundBalance.key) ?? null : null;
       if (balanceCents !== null) {
         for (const row of await store.select('api_modules', { limit: 500 })) {
           await store.update('api_modules', String(row.module_key), {
