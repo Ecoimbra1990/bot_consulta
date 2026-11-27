@@ -14,6 +14,29 @@ interface AdminContext {
 
 type Handler = (context: AdminContext) => Promise<Row>;
 
+function corsHeaders(request: Request): Headers {
+  const origin = request.headers.get('origin') ?? '';
+  const configured = (Deno.env.get('ALLOWED_ORIGINS') ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const allowed = new Set([
+    'https://bot-consulta.ankecs.workers.dev',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    ...configured,
+  ]);
+  const headers = new Headers({ Vary: 'Origin' });
+  if (allowed.has(origin)) {
+    headers.set('Access-Control-Allow-Origin', origin);
+  }
+  return headers;
+}
+
+function json(body: unknown, status: number, request: Request): Response {
+  return Response.json(body, { status, headers: corsHeaders(request) });
+}
+
 async function createUser(context: AdminContext): Promise<Row> {
   const { store, payload } = context;
   const email = String(payload.email ?? '').trim().toLowerCase();
@@ -148,13 +171,20 @@ const handlers: Record<string, Handler> = {
 const store = createStore();
 
 Deno.serve(async (request: Request) => {
+  if (request.method === 'OPTIONS') {
+    const headers = corsHeaders(request);
+    headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'authorization, apikey, content-type, x-client-info');
+    headers.set('Access-Control-Max-Age', '86400');
+    return new Response(null, { status: 204, headers });
+  }
   if (request.method !== 'POST') {
-    return Response.json({ ok: false, error: 'method not allowed' }, { status: 405 });
+    return json({ ok: false, error: 'method not allowed' }, 405, request);
   }
   const authorization = request.headers.get('authorization') ?? '';
   const token = authorization.replace(/^Bearer\s+/i, '');
   if (!token) {
-    return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+    return json({ ok: false, error: 'unauthorized' }, 401, request);
   }
   const anon = createClient(
     Deno.env.get('SUPABASE_URL')!,
@@ -163,26 +193,26 @@ Deno.serve(async (request: Request) => {
   );
   const { data: authUser, error: authError } = await anon.auth.getUser(token);
   if (authError || !authUser.user || authUser.user.app_metadata?.role !== 'admin') {
-    return Response.json({ ok: false, error: 'forbidden' }, { status: 403 });
+    return json({ ok: false, error: 'forbidden' }, 403, request);
   }
   const publicUser = await store.selectOne('users', { eq: { auth_user_id: authUser.user.id } });
   if (!publicUser) {
-    return Response.json({ ok: false, error: 'admin user not found' }, { status: 403 });
+    return json({ ok: false, error: 'admin user not found' }, 403, request);
   }
   let body: Row;
   try {
     body = (await request.json()) as Row;
   } catch {
-    return Response.json({ ok: false, error: 'invalid body' }, { status: 400 });
+    return json({ ok: false, error: 'invalid body' }, 400, request);
   }
   const handler = handlers[String(body.action ?? '')];
   if (!handler) {
-    return Response.json({ ok: false, error: 'unknown action' }, { status: 400 });
+    return json({ ok: false, error: 'unknown action' }, 400, request);
   }
   try {
     const data = await handler({ store, actorId: String(publicUser.id), payload: (body.payload ?? {}) as Row });
-    return Response.json({ ok: true, data });
+    return json({ ok: true, data }, 200, request);
   } catch (error) {
-    return Response.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+    return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400, request);
   }
 });

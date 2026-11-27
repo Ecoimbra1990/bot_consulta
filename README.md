@@ -41,7 +41,7 @@ Senhas bcrypt não são importáveis: recrie o usuário admin pelo Auth Admin AP
 ### Supabase
 
 1. `supabase link --project-ref SEU_PROJECT_REF` e `supabase db push`.
-2. Configure os segredos com `supabase secrets set NOME=valor` para todas as variáveis de runtime do `.env.example`.
+2. Configure os segredos com `supabase secrets set NOME=valor` para todas as variáveis de runtime do `.env.example`, incluindo `ALLOWED_ORIGINS` para o domínio do painel.
 3. Registre `project_url` e `cron_secret_key` no Vault para o pg_cron.
 4. Faça deploy das funções:
    - `supabase functions deploy health`
