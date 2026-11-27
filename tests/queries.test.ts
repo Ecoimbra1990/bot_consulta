@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { APIBrasilAdapter } from '../supabase/functions/_shared/provider.ts';
 import { runQuery } from '../supabase/functions/_shared/queries.ts';
+import type { Row } from '../supabase/functions/_shared/types.ts';
 import { InsufficientBalanceError } from '../supabase/functions/_shared/wallet.ts';
 import { MemoryStore } from './helpers/memory-store.ts';
 
@@ -29,6 +30,15 @@ async function seedUser(store: MemoryStore, id: string, walletBalanceCents = 100
 async function balance(store: MemoryStore, id: string): Promise<number> {
   const user = await store.selectById('users', id);
   return Number(user?.wallet_balance_cents ?? 0);
+}
+
+class FailingCacheStore extends MemoryStore {
+  override async upsert(table: string, row: Row, onConflict = 'id'): Promise<Row> {
+    if (table === 'query_cache') {
+      throw new Error("Could not find the 'module_key' column of 'query_cache' in the schema cache");
+    }
+    return super.upsert(table, row, onConflict);
+  }
 }
 
 describe('execução de consultas', () => {
@@ -82,6 +92,21 @@ describe('execução de consultas', () => {
       path: '/consulta/cpf/credits',
     });
     expect(result.charged_cents).toBe(70);
+  });
+
+  it('não falha a consulta quando a gravação do cache apresenta erro', async () => {
+    const store = new FailingCacheStore();
+    await seedUser(store, 'u1');
+    const result = await runQuery(store, {
+      userId: 'u1',
+      entity: 'PF',
+      keyType: 'cpf',
+      keyValue: '52998224725',
+      provider: fakeProvider(),
+    });
+    expect(result.status).toBe('completed');
+    expect(result.charged_cents).toBe(60);
+    expect(await balance(store, 'u1')).toBe(99_940);
   });
 
   it('estorna o valor quando o provedor falha', async () => {

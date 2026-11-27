@@ -229,21 +229,25 @@ export async function runQuery(store: Store, input: RunQueryInput): Promise<Row>
   });
   if (!result.raw?.mock) {
     const settings = await getRuntimeSettings(store);
-    await store.upsert(
-      'query_cache',
-      {
-        key_hash: keyHash,
-        entity,
-        key_type: keyType,
-        module_key: price.moduleKey,
-        raw_encrypted: rawEncrypted,
-        normalized_json: result.normalized,
-        is_mock: false,
-        expires_at: new Date(Date.now() + settings.query_cache_ttl_seconds * 1000).toISOString(),
-        created_at: now,
-      },
-      'key_hash',
-    );
+    try {
+      await store.upsert(
+        'query_cache',
+        {
+          key_hash: keyHash,
+          entity,
+          key_type: keyType,
+          module_key: price.moduleKey,
+          raw_encrypted: rawEncrypted,
+          normalized_json: result.normalized,
+          is_mock: false,
+          expires_at: new Date(Date.now() + settings.query_cache_ttl_seconds * 1000).toISOString(),
+          created_at: now,
+        },
+        'key_hash',
+      );
+    } catch (error) {
+      console.warn('Falha ao gravar cache da consulta', error);
+    }
   }
   return (await store.selectById('queries', query.id)) ?? query;
 }
