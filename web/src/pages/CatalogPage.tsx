@@ -96,6 +96,7 @@ export function CatalogPage() {
   const moduleColumns: TableColumn<ApiModule>[] = [
     { header: 'Módulo', render: (module) => <span className="font-medium text-white">{module.label ?? module.module_key}</span> },
     { header: 'Chave', render: (module) => <span className="font-mono text-xs">{module.module_key}</span> },
+    { header: 'Origem', render: (module) => module.source },
     { header: 'Endpoint', render: (module) => <span className="font-mono text-xs">{module.endpoint ?? '-'}</span> },
     { header: 'Custo', render: (module) => formatCurrency(module.cost_cents) },
     { header: 'Saldo API', render: (module) => (module.balance_cents === null ? '-' : formatCurrency(module.balance_cents)) },
@@ -120,7 +121,7 @@ export function CatalogPage() {
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-white">Catálogo e carteira</h1>
-        <p className="mt-1 text-sm text-slate-400">Custos sincronizados da APIBrasil e movimentações de créditos</p>
+        <p className="mt-1 text-sm text-slate-400">Custos sincronizados da Verifica Online e da APIBrasil, com movimentações de créditos</p>
       </div>
 
       {error && <p className="rounded-md bg-red-500/10 px-4 py-3 text-sm text-red-300">{error}</p>}
@@ -130,7 +131,7 @@ export function CatalogPage() {
       ) : (
         <>
           <section className="space-y-4">
-            <h2 className="text-lg font-semibold text-white">Módulos da APIBrasil</h2>
+            <h2 className="text-lg font-semibold text-white">Módulos de consulta</h2>
             <Table columns={moduleColumns} rows={modules} rowKey={(module) => module.module_key} />
           </section>
           <section className="space-y-4">

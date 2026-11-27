@@ -1,5 +1,16 @@
+import { sha256Hex } from './crypto.ts';
 import { config } from './env.ts';
-import { normalizeCompany, normalizeFleet, normalizePf, normalizePhoneOperator, normalizePhoneResult, normalizeVehicle } from './normalize.ts';
+import {
+  normalizeCompany,
+  normalizeCompanyOnline,
+  normalizeFleet,
+  normalizePf,
+  normalizePfOnline,
+  normalizePhoneOperator,
+  normalizePhoneResult,
+  normalizeVehicle,
+  normalizeVehicleOnline,
+} from './normalize.ts';
 import type { ProviderResult, Row } from './types.ts';
 
 type Normalizer = (provider: string, raw: Row, key: string) => Row;
@@ -9,13 +20,37 @@ export interface ServiceOptions {
   path?: string;
 }
 
+export interface QueryProvider {
+  readonly name: string;
+  queryPfCpf(cpf: string, options?: ServiceOptions): Promise<ProviderResult>;
+  queryCompanyCnpj(cnpj: string, options?: ServiceOptions): Promise<ProviderResult>;
+  queryVehiclePlate(plate: string, full?: boolean, options?: ServiceOptions): Promise<ProviderResult>;
+  queryVehicleByCpf(cpf: string, options?: ServiceOptions): Promise<ProviderResult>;
+  queryPhone(phone: string, options?: ServiceOptions): Promise<ProviderResult>;
+}
+
 const retryable = new Set([429, 500, 502, 503, 504]);
+const verificaRetryable = new Set([429, 500, 502, 503, 504]);
+
+const VERIFICA_DATASETS: Record<string, string> = {
+  pf: 'cpf_dados_completos',
+  company: 'cnpj_dados_basicos',
+  vehicle: 'consulta_placa',
+  'full-vehicle': 'veicular_completa',
+};
+
+const VERIFICA_INPUTS: Record<string, string> = {
+  pf: 'cpf',
+  company: 'cnpj',
+  vehicle: 'plate',
+  'full-vehicle': 'plate',
+};
 
 function unavailable(message: string): ProviderResult {
   return { provider: 'apibrasil', ok: false, normalized: {}, raw: {}, error: message, cost_cents: 0 };
 }
 
-export class APIBrasilAdapter {
+export class APIBrasilAdapter implements QueryProvider {
   readonly name = 'apibrasil';
 
   private headers(): Record<string, string> {
@@ -276,5 +311,157 @@ export class APIBrasilAdapter {
     return this.query('company', cnpj, options.path || config.apiBrasil.companyPath, { tipo: serviceName, cnpj }, (provider, raw, key) =>
       normalizeCompany(provider, raw, key),
     );
+  }
+}
+
+export class VerificaOnlineAdapter implements QueryProvider {
+  readonly name = 'verifica-online';
+
+  private unavailable(message: string): ProviderResult {
+    return { provider: this.name, ok: false, normalized: {}, raw: {}, error: message, cost_cents: 0 };
+  }
+
+  private headers(idempotencyKey: string): Record<string, string> {
+    return {
+      Authorization: `Bearer ${config.verificaOnline.apiKey}`,
+      'Content-Type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+    };
+  }
+
+  private async idempotencyKey(dataset: string, key: string): Promise<string> {
+    const day = new Date().toISOString().slice(0, 10);
+    const hash = await sha256Hex(`voa:${dataset}:${key}:${day}`);
+    return `voa-${hash.slice(0, 40)}`;
+  }
+
+  private async errorMessage(response: Response): Promise<string> {
+    try {
+      const body = await response.json() as Row;
+      const error = body && typeof body.error === 'object' ? body.error as Row : {};
+      return String(error.message ?? '') || `Verifica Online HTTP ${response.status}`;
+    } catch {
+      return `Verifica Online HTTP ${response.status}`;
+    }
+  }
+
+  private async poll(requestId: string, headers: Record<string, string>): Promise<Row> {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const response = await fetch(`${config.verificaOnline.baseUrl}/queries/${encodeURIComponent(requestId)}`, {
+        headers,
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (response.ok) {
+        const envelope = await response.json() as Row;
+        if (String(envelope?.status ?? '') !== 'processing') {
+          return envelope;
+        }
+        continue;
+      }
+      if (!verificaRetryable.has(response.status)) {
+        throw new Error(await this.errorMessage(response));
+      }
+    }
+    throw new Error('Consulta ainda em processamento na Verifica Online');
+  }
+
+  private async post(dataset: string, inputField: string, key: string, idempotencyKey: string): Promise<Row> {
+    const headers = this.headers(idempotencyKey);
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const response = await fetch(`${config.verificaOnline.baseUrl}/datasets/${dataset}/queries`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ [inputField]: key }),
+          signal: AbortSignal.timeout(60_000),
+        });
+        if (response.status === 402) {
+          throw new Error('Saldo insuficiente na Verifica Online');
+        }
+        if (verificaRetryable.has(response.status) && attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+          continue;
+        }
+        if (!response.ok) {
+          throw new Error(await this.errorMessage(response));
+        }
+        const envelope = await response.json() as Row;
+        if (String(envelope?.status ?? '') === 'processing') {
+          return await this.poll(String(envelope?.request_id ?? ''), headers);
+        }
+        return envelope;
+      } catch (error) {
+        lastError = error;
+        const status = error instanceof Error && 'status' in error ? Number((error as Row).status) : 0;
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes('Saldo insuficiente') || message.includes('ainda em processamento') || message.startsWith('Verifica Online HTTP 4')) {
+          throw error;
+        }
+        if ((verificaRetryable.has(status) || /timeout|network|fetch failed/i.test(message)) && attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+          continue;
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('Falha ao consultar Verifica Online');
+  }
+
+  private async query(kind: string, key: string, options: ServiceOptions, normalizer: Normalizer): Promise<ProviderResult> {
+    if (!config.verificaOnline.apiKey) {
+      return this.unavailable('VERIFICA_ONLINE_API_KEY não configurado');
+    }
+    const dataset = VERIFICA_DATASETS[kind] ?? '';
+    const inputField = VERIFICA_INPUTS[kind] ?? '';
+    if (!dataset || !inputField) {
+      return this.unavailable(`Consulta ${kind} não disponível na Verifica Online`);
+    }
+    try {
+      const idempotencyKey = await this.idempotencyKey(dataset, key);
+      const raw = await this.post(dataset, inputField, key, idempotencyKey);
+      const status = String(raw?.status ?? '');
+      if (status === 'no_data') {
+        return this.unavailable('Nenhum dado encontrado na Verifica Online');
+      }
+      if (status === 'failed') {
+        return this.unavailable('Consulta falhou na Verifica Online');
+      }
+      if (status !== 'succeeded' && status !== 'partial') {
+        return this.unavailable(`Estado inesperado da Verifica Online: ${status || 'desconhecido'}`);
+      }
+      return {
+        provider: this.name,
+        ok: true,
+        normalized: normalizer(this.name, raw, key),
+        raw,
+        error: '',
+        cost_cents: Math.max(0, Number(raw?.billing?.amount_cents ?? 0) || 0),
+      };
+    } catch (error) {
+      return this.unavailable(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async queryPfCpf(cpf: string, options: ServiceOptions = {}): Promise<ProviderResult> {
+    return this.query('pf', cpf, options, normalizePfOnline);
+  }
+
+  async queryCompanyCnpj(cnpj: string, options: ServiceOptions = {}): Promise<ProviderResult> {
+    return this.query('company', cnpj, options, normalizeCompanyOnline);
+  }
+
+  async queryVehiclePlate(plate: string, full = false, options: ServiceOptions = {}): Promise<ProviderResult> {
+    return this.query(full ? 'full-vehicle' : 'vehicle', plate, options, (provider, raw, key) =>
+      normalizeVehicleOnline(provider, raw, 'placa', key),
+    );
+  }
+
+  async queryVehicleByCpf(): Promise<ProviderResult> {
+    return this.unavailable('Frota por CPF não disponível na Verifica Online');
+  }
+
+  async queryPhone(): Promise<ProviderResult> {
+    return this.unavailable('Consulta por telefone não disponível na Verifica Online');
   }
 }

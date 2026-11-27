@@ -240,6 +240,128 @@ export function normalizePhoneOperator(raw: Row): Row {
   };
 }
 
+function verificaData(raw: Row): Row {
+  return asObject(firstDefined(raw?.data, raw));
+}
+
+export function normalizePfOnline(provider: string, raw: Row, cpf: string): Row {
+  const data = verificaData(raw);
+  const basic = asObject(firstDefined(data.basic, data));
+  const documents = asObject(basic.documents);
+  const phones = asArray(data.phones)
+    .map((item) => {
+      const phone = asObject(item);
+      const number = firstDefined(phone.e164, [phone.area_code, phone.number].filter(Boolean).join(''));
+      return number ? maskValue('telefone', number) : null;
+    })
+    .filter(Boolean);
+  const emails = asArray(data.emails)
+    .map((item) => firstDefined(asObject(item).email, item))
+    .filter(Boolean)
+    .map(String);
+  return {
+    entity: 'PF',
+    provider,
+    cpf: maskValue('cpf', cpf),
+    nome: firstDefined(basic.name, data.name),
+    situacao_cadastral: firstDefined(basic.registration_status, data.registration_status),
+    nascimento: firstDefined(basic.birth_date, data.birth_date),
+    nome_mae: firstDefined(basic.mother_name, data.mother_name),
+    sexo: firstDefined(basic.sex, data.sex),
+    telefones: phones,
+    emails,
+    enderecos: sanitize(asArray(data.addresses)),
+    parentes: [],
+    pessoas_contato: [],
+    moradores_mesmo_domicilio: [],
+    vinculos_trabalho: [],
+    participacao_em_empresas: [],
+    atributos: sanitize({ pai: basic.father_name, situacao_data: basic.registration_status_date, documentos: documents }),
+  };
+}
+
+export function normalizeCompanyOnline(provider: string, raw: Row, cnpj: string): Row {
+  const data = verificaData(raw);
+  const company = asObject(data.company);
+  const establishment = asObject(data.establishment);
+  const address = asObject(establishment.address);
+  const city = asObject(address.city);
+  const state = asObject(address.state);
+  const activity = asObject(establishment.primary_activity);
+  const addressValue = [
+    address.street_type,
+    address.street,
+    address.number,
+    address.complement,
+    address.district,
+    city.name,
+    firstDefined(state.abbreviation, state.name),
+    address.postal_code,
+  ]
+    .filter(Boolean)
+    .map((part) => String(part))
+    .join(', ');
+  return {
+    entity: 'EMPRESA',
+    provider,
+    cnpj: maskValue('cnpj', cnpj),
+    razao_social: firstDefined(company.legal_name, data.legal_name),
+    nome_fantasia: firstDefined(establishment.trade_name, data.trade_name),
+    situacao_cadastral: firstDefined(establishment.registration_status, data.registration_status),
+    cnae: firstDefined(activity.description, data.cnae),
+    endereco: addressValue || null,
+    atributos: sanitize({
+      socios: data.partners,
+      tributacao: data.simplified_tax,
+      atividades_secundarias: establishment.secondary_activities,
+      inscricoes: establishment.state_registrations,
+    }),
+  };
+}
+
+export function normalizeVehicleOnline(provider: string, raw: Row, keyType: string, keyValue: string): Row {
+  const data = verificaData(raw);
+  const vehicle = asObject(data.vehicle);
+  const owner = asObject(data.owner);
+  const candidate = asObject(asArray(data.fipe_candidates)[0]);
+  const indicators = asObject(data.indicators);
+  const brand = firstDefined(vehicle.brand, candidate.brand);
+  const model = firstDefined(vehicle.model, candidate.model);
+  const brandModel = firstDefined(vehicle.brand_model, brand && model ? `${brand}/${model}` : firstDefined(brand, model));
+  const renavam = firstDefined(vehicle.renavam, candidate.renavam);
+  const chassis = firstDefined(vehicle.chassis, vehicle.chassi, candidate.chassis, candidate.chassi);
+  return {
+    entity: 'VEICULO',
+    provider,
+    consulta: { tipo: keyType, valor: maskValue(keyType, keyValue) },
+    placa: firstDefined(vehicle.plate, candidate.plate, keyValue),
+    renavam: renavam ? maskValue('renavam', renavam) : null,
+    chassi: chassis ? maskValue('chassi', chassis) : null,
+    marca_modelo: brandModel,
+    ano_fabricacao: firstDefined(vehicle.manufacture_year, candidate.manufacture_year),
+    ano_modelo: firstDefined(vehicle.model_year, candidate.model_year),
+    cor: firstDefined(vehicle.color, candidate.color),
+    situacao: firstDefined(vehicle.status, candidate.status),
+    proprietario: {
+      nome: firstDefined(owner.name, data.owner_name),
+      documento: owner.document ? maskField('documento', owner.document) : null,
+    },
+    alertas: {
+      roubo_furto: firstDefined(indicators.theft, indicators.renainf),
+      leilao: indicators.auction ?? null,
+      renajud: indicators.renajud ?? null,
+      recall: indicators.recall ?? null,
+      comunicacao_venda: indicators.sale_communication ?? null,
+    },
+    atributos: sanitize({
+      ...vehicle,
+      fipe: data.fipe_candidates,
+      registro: data.registration,
+      indicadores: indicators,
+    }),
+  };
+}
+
 export function normalizeCompany(provider: string, raw: Row, cnpj: string): Row {
   const data = payload(raw);
   const details = asObject(firstDefined(data.dados, data.resultado, data.cnpj, data));

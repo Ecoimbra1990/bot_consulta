@@ -50,6 +50,10 @@ export const config = {
     payerEmail: env('MERCADOPAGO_PAYER_EMAIL', ''),
     notificationUrl: env('MERCADOPAGO_NOTIFICATION_URL', ''),
   },
+  verificaOnline: {
+    apiKey: env('VERIFICA_ONLINE_API_KEY'),
+    baseUrl: env('VERIFICA_ONLINE_API_BASE', 'https://api.verifica-online.com.br').replace(/\/$/, ''),
+  },
   apiBrasil: {
     token: env('APIBRASIL_TOKEN'),
     baseUrl: env('APIBRASIL_BASE_URL', 'https://gateway.apibrasil.io/api/v2').replace(/\/$/, ''),
@@ -80,8 +84,8 @@ export function validateRuntime(): void {
   if (!config.encryptionKeys && !config.fernetKey) {
     throw new Error('ENCRYPTION_KEYS é obrigatório em produção');
   }
-  if (!config.apiBrasil.token) {
-    throw new Error('APIBRASIL_TOKEN é obrigatório em produção');
+  if (!config.verificaOnline.apiKey && !config.apiBrasil.token) {
+    throw new Error('VERIFICA_ONLINE_API_KEY ou APIBRASIL_TOKEN é obrigatório em produção');
   }
   if (config.apiBrasil.mock) {
     throw new Error('APIBRASIL_MODE_MOCK não pode ser usado em produção');

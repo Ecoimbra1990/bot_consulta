@@ -43,23 +43,30 @@ const MODULE_KEYS: Record<string, string> = {
   'TELEFONE:telefone:basic': 'telefone',
   'VEICULO:placa:basic': 'placa-basica',
   'VEICULO:placa:full': 'placa-completa',
-  'VEICULO:renavam:basic': 'placa-completa',
-  'VEICULO:cpf:basic': 'placa-completa',
-  'VEICULO_FROTA:cpf:basic': 'placa-completa',
+  'VEICULO:renavam:basic': 'renavam',
+  'VEICULO:cpf:basic': 'frota-cpf',
+  'VEICULO_FROTA:cpf:basic': 'frota-cpf',
 };
 
+const VERIFICA_MODULES = new Set(['pf-cpf', 'cnpj', 'placa-basica', 'placa-completa']);
+
 const DEFAULT_SERVICE_NAMES: Record<string, string> = {
-  'pf-cpf': 'dados-cadastrais',
-  cnpj: 'cnpj',
+  'pf-cpf': 'cpf_dados_completos',
+  cnpj: 'cnpj_dados_basicos',
   telefone: 'cpf-cnpj-pelo-telefone',
-  'placa-basica': 'roubo-furto-v2',
-  'placa-completa': 'roubo-furto-v2',
+  'placa-basica': 'consulta_placa',
+  'placa-completa': 'veicular_completa',
+  renavam: 'frota-pf',
+  'frota-cpf': 'frota-pf',
 };
+
+export type QueryProviderName = 'verifica-online' | 'apibrasil';
 
 export interface ResolvedPrice {
   moduleKey: string;
   endpoint: string;
   serviceName: string;
+  provider: QueryProviderName;
   costCents: number;
   priceCents: number;
   source: 'catalog' | 'fallback';
@@ -72,11 +79,12 @@ export function moduleKeyFor(entity: string, keyType: string, mode: QueryMode): 
 export function endpointFor(entity: string, keyType: string, mode: QueryMode): string {
   const api = config.apiBrasil;
   const key = moduleKeyFor(entity, keyType, mode);
-  if (key === 'pf-cpf') return api.pfPath;
-  if (key === 'cnpj') return api.companyPath;
+  if (key === 'pf-cpf') return '/datasets/cpf_dados_completos/queries';
+  if (key === 'cnpj') return '/datasets/cnpj_dados_basicos/queries';
+  if (key === 'placa-basica') return '/datasets/consulta_placa/queries';
+  if (key === 'placa-completa') return '/datasets/veicular_completa/queries';
   if (key === 'telefone') return api.phonePath;
-  if (key === 'placa-basica') return api.vehiclePlatePath;
-  if (key === 'placa-completa') return api.vehicleFullPath || api.vehiclePlatePath;
+  if (key === 'renavam' || key === 'frota-cpf') return api.vehicleFleetPath;
   return '';
 }
 
@@ -120,6 +128,9 @@ export async function resolvePrice(
   const fallback = fallbackPriceFor(entity, keyType, mode);
   const selectedEndpoint = normalizeEndpoint(row?.endpoint) || endpoint;
   const serviceName = rowServiceName(row, moduleKey);
+  const provider: QueryProviderName = row?.source === 'verifica-online' || (!row && VERIFICA_MODULES.has(moduleKey))
+    ? 'verifica-online'
+    : 'apibrasil';
 
   if (costCents > 0) {
     const withMargin = Math.ceil((costCents * config.pricingMultiplier) / 10) * 10;
@@ -127,6 +138,7 @@ export async function resolvePrice(
       moduleKey,
       endpoint: selectedEndpoint,
       serviceName,
+      provider,
       costCents,
       priceCents: Math.max(10, withMargin),
       source: 'catalog',
@@ -137,6 +149,7 @@ export async function resolvePrice(
     moduleKey,
     endpoint: selectedEndpoint,
     serviceName,
+    provider,
     costCents: 0,
     priceCents: fallback,
     source: 'fallback',
@@ -144,7 +157,10 @@ export async function resolvePrice(
 }
 
 export function assertSafeMargin(price: ResolvedPrice): void {
-  if (config.apiBrasil.catalogUrl && price.source !== 'catalog') {
+  const requiresCatalog = price.provider === 'verifica-online'
+    ? Boolean(config.verificaOnline.apiKey)
+    : Boolean(config.apiBrasil.catalogUrl);
+  if (requiresCatalog && price.source !== 'catalog') {
     throw new Error(`Módulo ${price.moduleKey} sem custo catalogado; consulta bloqueada`);
   }
   if (price.costCents > 0 && price.priceCents <= price.costCents) {

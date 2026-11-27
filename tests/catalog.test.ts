@@ -6,10 +6,12 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe('sincronização do catálogo APIBrasil', () => {
-  it('importa o formato de /precos e resolve preços pelo módulo canônico', async () => {
+describe('sincronização do catálogo de consultas', () => {
+  it('importa /datasets da Verifica Online, /precos da APIBrasil e resolve preços pelo módulo canônico', async () => {
     vi.stubEnv('APIBRASIL_CATALOG_URL', 'https://app.apibrasil.io/precos');
     vi.stubEnv('APIBRASIL_TOKEN', 'test-token');
+    vi.stubEnv('VERIFICA_ONLINE_API_KEY', 'voa_test_key');
+    vi.stubEnv('VERIFICA_ONLINE_API_BASE', 'https://api.verifica-online.test');
 
     const payload = {
       error: false,
@@ -30,7 +32,20 @@ describe('sincronização do catálogo APIBrasil', () => {
       ],
     };
 
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 })));
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+      if (String(input).endsWith('/datasets')) {
+        return new Response(JSON.stringify({
+          datasets: [
+            { key: 'cpf_dados_completos', enabled: true, price_cents: 499, name: 'CPF completo' },
+            { key: 'cnpj_dados_basicos', enabled: true, price_cents: 299, name: 'CNPJ' },
+            { key: 'consulta_placa', enabled: true, price_cents: 199, name: 'Placa' },
+            { key: 'veicular_completa', enabled: true, price_cents: 399, name: 'Placa completa' },
+            { key: 'telefone', enabled: true, price_cents: 99, name: 'Sem uso' },
+          ],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify(payload), { status: 200 });
+    }));
 
     const { syncApiCatalog } = await import('../supabase/functions/_shared/catalog.ts');
     const { resolvePrice } = await import('../supabase/functions/_shared/pricing.ts');
@@ -50,31 +65,47 @@ describe('sincronização do catálogo APIBrasil', () => {
     ]);
 
     const cpf = rows.find((row) => row.module_key === 'pf-cpf');
-    expect(cpf?.endpoint).toBe('/consulta/cpf/credits');
-    expect(cpf?.cost_cents).toBe(1290);
-    expect((cpf?.payload_json as Record<string, unknown>).service_name).toBe('dados-cadastrais');
+    expect(cpf?.endpoint).toBe('/datasets/cpf_dados_completos/queries');
+    expect(cpf?.cost_cents).toBe(499);
+    expect(cpf?.source).toBe('verifica-online');
+    expect((cpf?.payload_json as Record<string, unknown>).dataset_key).toBe('cpf_dados_completos');
 
     const cnpj = rows.find((row) => row.module_key === 'cnpj');
-    expect(cnpj?.endpoint).toBe('/dados/cnpj/credits');
-    expect(cnpj?.cost_cents).toBe(850);
+    expect(cnpj?.endpoint).toBe('/datasets/cnpj_dados_basicos/queries');
+    expect(cnpj?.cost_cents).toBe(299);
+    expect(cnpj?.source).toBe('verifica-online');
 
     const phone = rows.find((row) => row.module_key === 'telefone');
     expect(phone?.cost_cents).toBe(640);
     expect(phone?.endpoint).toBe('/consulta/cpf-cnpj-pelo-telefone/credits');
+    expect(phone?.source).toBe('apibrasil');
     expect((phone?.payload_json as Record<string, unknown>).service_name).toBe('cpf-cnpj-pelo-telefone');
 
     const basicPlate = rows.find((row) => row.module_key === 'placa-basica');
     const fullPlate = rows.find((row) => row.module_key === 'placa-completa');
-    expect(basicPlate?.cost_cents).toBe(1250);
-    expect(fullPlate?.cost_cents).toBe(1250);
-    expect(fullPlate?.endpoint).toBe('/consulta/veiculos/credits');
-    expect((basicPlate?.payload_json as Record<string, unknown>).service_name).toBe('roubo-furto-v2');
-    expect((fullPlate?.payload_json as Record<string, unknown>).service_name).toBe('roubo-furto-v2');
+    expect(basicPlate?.cost_cents).toBe(199);
+    expect(fullPlate?.cost_cents).toBe(399);
+    expect(basicPlate?.endpoint).toBe('/datasets/consulta_placa/queries');
+    expect(fullPlate?.endpoint).toBe('/datasets/veicular_completa/queries');
+    expect(basicPlate?.source).toBe('verifica-online');
+    expect(fullPlate?.source).toBe('verifica-online');
 
     const price = await resolvePrice(store, 'PF', 'cpf', 'basic');
     expect(price.source).toBe('catalog');
-    expect(price.costCents).toBe(1290);
-    expect(price.priceCents).toBe(2580);
-    expect(price.serviceName).toBe('dados-cadastrais');
+    expect(price.provider).toBe('verifica-online');
+    expect(price.costCents).toBe(499);
+    expect(price.priceCents).toBe(1000);
+    expect(price.serviceName).toBe('cpf_dados_completos');
+  });
+
+  it('bloqueia módulo Verifica sem custo catalogado quando a chave está ativa', async () => {
+    vi.stubEnv('VERIFICA_ONLINE_API_KEY', 'voa_test_key');
+    const { assertSafeMargin, resolvePrice } = await import('../supabase/functions/_shared/pricing.ts');
+
+    const price = await resolvePrice(new MemoryStore(), 'PF', 'cpf', 'basic');
+
+    expect(price.provider).toBe('verifica-online');
+    expect(price.source).toBe('fallback');
+    expect(() => assertSafeMargin(price)).toThrow(/sem custo catalogado/);
   });
 });

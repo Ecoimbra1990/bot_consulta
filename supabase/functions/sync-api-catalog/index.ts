@@ -10,12 +10,12 @@ Deno.serve(async (request: Request) => {
     const store = createStore();
     const result = await syncApiCatalog(store);
     if (result.alerts.length > 0) {
-      await notifyAdminSafely(`Alerta do catálogo APIBrasil:\n${result.alerts.join('\n')}`);
+      await notifyAdminSafely(`Alerta do catálogo de consultas:\n${result.alerts.join('\n')}`);
     }
     return Response.json({ ok: true, ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await notifyAdminSafely(`Falha ao sincronizar catálogo da APIBrasil: ${message}`);
+    await notifyAdminSafely(`Falha ao sincronizar catálogo de consultas: ${message}`);
     return Response.json({ ok: false, error: message }, { status: 502 });
   }
 });

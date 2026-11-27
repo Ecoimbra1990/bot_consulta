@@ -3,7 +3,7 @@ import * as validators from './validators.ts';
 import { onlyDigits } from './validators.ts';
 import { maskCnpj, maskCpf, maskPhone, maskPlate } from './masking.ts';
 import { checkRateLimit } from './rate-limit.ts';
-import { APIBrasilAdapter } from './provider.ts';
+import { APIBrasilAdapter, VerificaOnlineAdapter, type QueryProvider } from './provider.ts';
 import { assertSafeMargin, resolvePrice, type QueryMode, type ResolvedPrice } from './pricing.ts';
 import { getRuntimeSettings } from './settings.ts';
 import type { ProviderResult, Row, Store } from './types.ts';
@@ -78,7 +78,7 @@ function validate(entityInput: string, keyTypeInput: string, keyValueInput: stri
 }
 
 async function callProvider(
-  provider: APIBrasilAdapter,
+  provider: QueryProvider,
   entity: string,
   keyType: string,
   keyValue: string,
@@ -110,7 +110,7 @@ export interface RunQueryInput {
   keyType: string;
   keyValue: string;
   mode?: QueryMode;
-  provider?: APIBrasilAdapter;
+  provider?: QueryProvider;
 }
 
 export async function runQuery(store: Store, input: RunQueryInput): Promise<Row> {
@@ -205,12 +205,13 @@ export async function runQuery(store: Store, input: RunQueryInput): Promise<Row>
 
   let result: ProviderResult;
   try {
-    result = await callProvider(input.provider ?? new APIBrasilAdapter(), entity, keyType, keyValue, mode, price);
+    const provider = input.provider ?? (price.provider === 'verifica-online' ? new VerificaOnlineAdapter() : new APIBrasilAdapter());
+    result = await callProvider(provider, entity, keyType, keyValue, mode, price);
   } catch (error) {
-    return refund(error instanceof Error ? error.message : 'Falha de comunicação com a APIBrasil');
+    return refund(error instanceof Error ? error.message : 'Falha de comunicação com o provedor');
   }
   if (!result.ok) {
-    return refund(result.error || 'Erro na APIBrasil');
+    return refund(result.error || 'Erro no provedor');
   }
 
   const rawEncrypted = await encryptText(JSON.stringify(result.raw));

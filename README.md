@@ -1,6 +1,6 @@
 # Bot Consulta (Supabase + Cloudflare Workers)
 
-MVP de consultas via Telegram usando **APIBrasil como único provedor** para Pessoa Física (CPF), Veículos (placa/Renavam/CPF atrelado), Telefone e Empresas (CNPJ), com painel admin web, assinaturas via Mercado Pago e retenção de dados conforme LGPD.
+MVP de consultas via Telegram usando **Verifica Online como provedor preferencial** para Pessoa Física (CPF), Empresas (CNPJ) e Veículos por placa, com **APIBrasil** para Telefone, Renavam e frota por CPF, painel admin web, assinaturas via Mercado Pago e retenção de dados conforme LGPD.
 
 ## Arquitetura
 
@@ -50,6 +50,7 @@ Senhas bcrypt não são importáveis: recrie o usuário admin pelo Auth Admin AP
    - `supabase functions deploy admin-api`
    - `supabase functions deploy expire-subscriptions`
    - `supabase functions deploy retention-purge`
+   - `supabase functions deploy sync-api-catalog`
 
 ### Cloudflare Workers (workers.dev)
 
@@ -69,18 +70,23 @@ Se o projeto for Cloudflare Pages clássico, mantenha apenas build/output (`dist
 - Telegram: aponte para a URL de `telegram-webhook` e configure o header `X-Telegram-Bot-Api-Secret-Token` com `TELEGRAM_WEBHOOK_SECRET`.
 - Mercado Pago: aponte para a URL de `mercadopago-webhook` e configure `MERCADOPAGO_WEBHOOK_SECRET` para validar `x-signature`.
 
-## Provedor APIBrasil
+## Provedores
 
-Os caminhos e `tipo` seguem a documentação em https://doc.apibrasil.io/:
+A Verifica Online é usada sempre que há dataset equivalente (docs em https://docs.verifica-online.com.br/docs/verifica-online-api/introducao):
 
-- CPF: `POST /consulta/cpf/credits` com `tipo=cpf-cadastral`.
-- Veículo por placa: `POST /consulta/veiculos/credits` com `tipo=nacional`.
+- CPF: `POST /datasets/cpf_dados_completos/queries`.
+- Empresa: `POST /datasets/cnpj_dados_basicos/queries`.
+- Veículo por placa: `POST /datasets/consulta_placa/queries` (básica) ou `/datasets/veicular_completa/queries` (completa).
+
+O `sync-api-catalog` lê `GET /datasets` da Verifica Online e substitui os módulos correspondentes no catálogo, preservando o preço real em `api_modules.cost_cents`. Requisições usam `Authorization: Bearer VERIFICA_ONLINE_API_KEY` e `Idempotency-Key` determinística por dia; respostas `processing` são consultadas em `GET /queries/{request_id}` e cobranças `402` viram "saldo insuficiente".
+
+A APIBrasil permanece nos fluxos sem dataset equivalente (docs em https://doc.apibrasil.io/):
+
 - Frota por CPF: `POST /consulta/veiculos/credits` com `tipo=frota-pf`.
 - Renavam: a APIBrasil não expõe consulta direta; o bot pede o CPF do proprietário, consulta a frota e filtra o Renavam informado.
 - Telefone: `POST /consulta/cpf-cnpj-pelo-telefone/credits`, enriquecido com `POST /consulta/telefone/credits`.
-- Empresa: `POST /consulta/cnpj/credits` com `tipo=cnpj-receita`.
 
-Sem token e com `APIBRASIL_MODE_MOCK=true` em dev, o adapter retorna dados fictícios; isso é bloqueado em produção.
+Sem token e com `APIBRASIL_MODE_MOCK=true` em dev, o adapter da APIBrasil retorna dados fictícios; isso é bloqueado em produção.
 
 ## LGPD
 

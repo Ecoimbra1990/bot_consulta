@@ -62,7 +62,14 @@ function text(value: unknown, fallback = ''): string {
   return value === null || value === undefined ? fallback : String(value).trim();
 }
 
-const CANONICAL_MODULE_KEYS = new Set(['pf-cpf', 'cnpj', 'telefone', 'placa-basica', 'placa-completa']);
+const CANONICAL_MODULE_KEYS = new Set(['pf-cpf', 'cnpj', 'telefone', 'placa-basica', 'placa-completa', 'frota-cpf', 'renavam']);
+
+const VERIFICA_MODULE_KEYS: Record<string, string> = {
+  cpf_dados_completos: 'pf-cpf',
+  cnpj_dados_basicos: 'cnpj',
+  consulta_placa: 'placa-basica',
+  veicular_completa: 'placa-completa',
+};
 
 interface BenefitRule {
   canonicalKey: string;
@@ -82,9 +89,12 @@ const BENEFIT_RULES: BenefitRule[] = [
   { canonicalKey: 'telefone', preferred: ['cpf-cnpj-pelo-telefone'] },
   { canonicalKey: 'placa-basica', preferred: PLATE_PREFERRED_SERVICES },
   { canonicalKey: 'placa-completa', preferred: PLATE_PREFERRED_SERVICES },
+  { canonicalKey: 'frota-cpf', preferred: ['frota-pf'] },
+  { canonicalKey: 'renavam', preferred: ['frota-pf'] },
 ];
 
 const SERVICE_ENDPOINTS: Record<string, string> = {
+  'frota-pf': config.apiBrasil.vehicleFleetPath,
   cnpj: '/dados/cnpj/credits',
   'cnpj-cadastral': '/dados/cnpj/credits',
   'receita-federal': config.apiBrasil.pfPath,
@@ -114,7 +124,10 @@ function canonicalModuleKey(...values: unknown[]): string {
       return slug;
     }
   }
-  if (/veiculo|placa|renavam|chassi/.test(joined)) {
+  if (/frota|renavam/.test(joined)) {
+    return 'frota-cpf';
+  }
+  if (/veiculo|placa|chassi/.test(joined)) {
     return /roubo|furto|sinistro|leilao|recall|alerta|historico|complet|full|panorama/.test(joined)
       ? 'placa-completa'
       : 'placa-basica';
@@ -137,6 +150,7 @@ function canonicalEndpoint(moduleKey: string): string {
   if (moduleKey === 'telefone') return config.apiBrasil.phonePath;
   if (moduleKey === 'placa-basica') return config.apiBrasil.vehiclePlatePath;
   if (moduleKey === 'placa-completa') return config.apiBrasil.vehicleFullPath || config.apiBrasil.vehiclePlatePath;
+  if (moduleKey === 'frota-cpf' || moduleKey === 'renavam') return config.apiBrasil.vehicleFleetPath;
   return '';
 }
 
@@ -192,18 +206,23 @@ function collectObjects(value: unknown, output: Row[] = [], depth = 0): Row[] {
   return output;
 }
 
-async function fetchJson(url: string): Promise<Row> {
+async function fetchJson(url: string, headers: Record<string, string>, provider: string): Promise<Row> {
   const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${config.apiBrasil.token}`,
-      Accept: 'application/json',
-    },
+    headers: { Accept: 'application/json', ...headers },
     signal: AbortSignal.timeout(20_000),
   });
   if (!response.ok) {
-    throw new Error(`APIBrasil HTTP ${response.status} em ${new URL(url).pathname}`);
+    throw new Error(`${provider} HTTP ${response.status} em ${new URL(url).pathname}`);
   }
   return (await response.json()) as Row;
+}
+
+function apiBrasilHeaders(): Record<string, string> {
+  return { Authorization: `Bearer ${config.apiBrasil.token}` };
+}
+
+function verificaHeaders(): Record<string, string> {
+  return { Authorization: `Bearer ${config.verificaOnline.apiKey}` };
 }
 
 export interface CatalogSyncResult {
@@ -213,77 +232,122 @@ export interface CatalogSyncResult {
   alerts: string[];
 }
 
-export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
-  if (!config.apiBrasil.catalogUrl || !config.apiBrasil.token) {
-    throw new Error('APIBRASIL_CATALOG_URL e APIBRASIL_TOKEN são obrigatórios para sincronizar o catálogo');
+async function fetchVerificaModules(alerts: string[]): Promise<Map<string, Row>> {
+  const selected = new Map<string, Row>();
+  if (!config.verificaOnline.apiKey) {
+    return selected;
   }
-  const payload = await fetchJson(config.apiBrasil.catalogUrl);
-  const candidates = collectObjects(payload);
+  try {
+    const url = `${config.verificaOnline.baseUrl}/datasets`;
+    const payload = await fetchJson(url, verificaHeaders(), 'Verifica Online');
+    const datasets = Array.isArray(payload.datasets) ? payload.datasets as Row[] : [];
+    for (const dataset of datasets) {
+      const datasetKey = text(dataset.key);
+      const moduleKey = VERIFICA_MODULE_KEYS[datasetKey];
+      if (!moduleKey || dataset.enabled === false || dataset.enabled === 0) {
+        continue;
+      }
+      const costCents = parseMoney(dataset.price_cents, 'price_cents') ?? 0;
+      if (costCents <= 0) {
+        alerts.push(`Verifica Online: dataset ${datasetKey} sem preço positivo; módulo ${moduleKey} não foi atualizado`);
+        continue;
+      }
+      selected.set(moduleKey, {
+        module_key: moduleKey,
+        label: text(dataset.name ?? dataset.description ?? datasetKey, datasetKey),
+        endpoint: `/datasets/${datasetKey}/queries`,
+        cost_cents: costCents,
+        balance_cents: null,
+        source: 'verifica-online',
+        payload_json: { ...dataset, dataset_key: datasetKey },
+        updated_at: new Date().toISOString(),
+      });
+    }
+  } catch (error) {
+    alerts.push(`Não foi possível consultar o catálogo da Verifica Online: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return selected;
+}
+
+export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
+  const hasApiBrasil = Boolean(config.apiBrasil.catalogUrl && config.apiBrasil.token);
+  if (!config.verificaOnline.apiKey && !hasApiBrasil) {
+    throw new Error('Configure VERIFICA_ONLINE_API_KEY ou APIBRASIL_CATALOG_URL e APIBRASIL_TOKEN para sincronizar o catálogo');
+  }
+
   const alerts: string[] = [];
   const selected = new Map<string, Row>();
   const selectionMeta = new Map<string, { rank: number; cost: number }>();
   let skipped = 0;
 
-  const message = text(payload.message);
-  if (payload.error === true || /sem credito|sem saldo|saldo insuficiente/i.test(message)) {
-    alerts.push(`APIBrasil: ${message || 'resposta indicando indisponibilidade'}`);
+  if (hasApiBrasil) {
+    const payload = await fetchJson(config.apiBrasil.catalogUrl, apiBrasilHeaders(), 'APIBrasil').catch((error: unknown) => {
+      alerts.push(`Não foi possível consultar o catálogo da APIBrasil: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
+    if (payload) {
+      const message = text(payload.message);
+      if (payload.error === true || /sem credito|sem saldo|saldo insuficiente/i.test(message)) {
+        alerts.push(`APIBrasil: ${message || 'resposta indicando indisponibilidade'}`);
+      }
+      for (const candidate of collectObjects(payload)) {
+        const service = serviceNameOf(candidate);
+        const rawEndpoint = candidateEndpoint(candidate, service, '');
+        const rawModuleKey = text(
+          candidate.module_key ?? candidate.service_name ?? candidate.key ?? candidate.slug ?? candidate.id ?? candidate.module ?? candidate.nome ?? candidate.name,
+        );
+        const description = text(candidate.label ?? candidate.descricao ?? candidate.description ?? candidate.name ?? candidate.nome);
+        const foundCost = deepFind(candidate, ['cost_cents', 'price_cents', 'preco_centavos', 'custo_centavos', 'cost', 'custo', 'price', 'preco', 'valor', 'value']);
+        const costCents = foundCost ? parseMoney(foundCost.value, foundCost.key) ?? 0 : 0;
+        const mappedKey = canonicalModuleKey(rawModuleKey, description, rawEndpoint);
+        if (!service || costCents <= 0 || (!mappedKey && service !== 'roubo-furto-v2')) {
+          skipped += 1;
+          continue;
+        }
+        const canonicalKeys = mappedKey === 'placa-completa'
+          ? ['placa-completa', 'placa-basica']
+          : mappedKey === 'roubo-furto-v2' || service === 'roubo-furto-v2'
+            ? ['placa-completa', 'placa-basica']
+            : mappedKey
+              ? [mappedKey]
+              : ['placa-completa', 'placa-basica'];
+
+        for (const moduleKey of canonicalKeys) {
+          const rule = BENEFIT_RULES.find((item) => item.canonicalKey === moduleKey);
+          if (!rule || !rule.preferred.includes(service)) {
+            continue;
+          }
+          const rank = preferenceRank(rule, service);
+          const current = selectionMeta.get(moduleKey);
+          if (current && !(costCents < current.cost || (costCents === current.cost && rank < current.rank))) {
+            continue;
+          }
+          const endpoint = candidateEndpoint(candidate, service, moduleKey);
+          if (!endpoint.startsWith('/')) {
+            continue;
+          }
+          const priceCents = Math.ceil((costCents * config.pricingMultiplier) / 10) * 10;
+          if (priceCents <= costCents) {
+            alerts.push(`Módulo ${moduleKey}: preço ${priceCents} não cobre custo ${costCents}`);
+          }
+          selectionMeta.set(moduleKey, { rank, cost: costCents });
+          selected.set(moduleKey, {
+            module_key: moduleKey,
+            label: text(candidate.label ?? candidate.descricao ?? candidate.description ?? candidate.name ?? candidate.nome ?? service, moduleKey),
+            endpoint,
+            cost_cents: costCents,
+            balance_cents: null,
+            source: 'apibrasil',
+            payload_json: { ...candidate, service_name: service },
+            updated_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
   }
 
-  for (const candidate of candidates) {
-    const service = serviceNameOf(candidate);
-    const rawEndpoint = candidateEndpoint(candidate, service, '');
-    const rawModuleKey = text(
-      candidate.module_key ?? candidate.service_name ?? candidate.key ?? candidate.slug ?? candidate.id ?? candidate.module ?? candidate.nome ?? candidate.name,
-    );
-    const description = text(candidate.label ?? candidate.descricao ?? candidate.description ?? candidate.name ?? candidate.nome);
-    const foundCost = deepFind(candidate, ['cost_cents', 'price_cents', 'preco_centavos', 'custo_centavos', 'cost', 'custo', 'price', 'preco', 'valor', 'value']);
-    const costCents = foundCost ? parseMoney(foundCost.value, foundCost.key) ?? 0 : 0;
-    const mappedKey = canonicalModuleKey(rawModuleKey, description, rawEndpoint);
-    if (!service || costCents <= 0 || (!mappedKey && service !== 'roubo-furto-v2')) {
-      skipped += 1;
-      continue;
-    }
-    const canonicalKeys = mappedKey === 'placa-completa'
-      ? ['placa-completa', 'placa-basica']
-      : mappedKey === 'roubo-furto-v2' || service === 'roubo-furto-v2'
-        ? ['placa-completa', 'placa-basica']
-        : mappedKey
-          ? [mappedKey]
-          : ['placa-completa', 'placa-basica'];
-
-    for (const moduleKey of canonicalKeys) {
-      const rule = BENEFIT_RULES.find((item) => item.canonicalKey === moduleKey);
-      if (!rule) {
-        continue;
-      }
-      if (!rule.preferred.includes(service)) {
-        continue;
-      }
-      const rank = preferenceRank(rule, service);
-      const current = selectionMeta.get(moduleKey);
-      if (current && !(costCents < current.cost || (costCents === current.cost && rank < current.rank))) {
-        continue;
-      }
-      const endpoint = candidateEndpoint(candidate, service, moduleKey);
-      if (!endpoint.startsWith('/')) {
-        continue;
-      }
-      const priceCents = Math.ceil((costCents * config.pricingMultiplier) / 10) * 10;
-      if (priceCents <= costCents) {
-        alerts.push(`Módulo ${moduleKey}: preço ${priceCents} não cobre custo ${costCents}`);
-      }
-      selectionMeta.set(moduleKey, { rank, cost: costCents });
-      selected.set(moduleKey, {
-        module_key: moduleKey,
-        label: text(candidate.label ?? candidate.descricao ?? candidate.description ?? candidate.name ?? candidate.nome ?? service, moduleKey),
-        endpoint,
-        cost_cents: costCents,
-        balance_cents: null,
-        source: 'apibrasil',
-        payload_json: { ...candidate, service_name: service },
-        updated_at: new Date().toISOString(),
-      });
-    }
+  for (const [moduleKey, row] of await fetchVerificaModules(alerts)) {
+    selected.set(moduleKey, row);
   }
 
   for (const row of selected.values()) {
@@ -297,9 +361,9 @@ export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
   }
 
   let balanceCents: number | null = null;
-  if (config.apiBrasil.accountUrl) {
+  if (hasApiBrasil && config.apiBrasil.accountUrl) {
     try {
-      const account = await fetchJson(config.apiBrasil.accountUrl);
+      const account = await fetchJson(config.apiBrasil.accountUrl, apiBrasilHeaders(), 'APIBrasil');
       const foundBalance = deepFind(account, ['balance_cents', 'saldo_centavos', 'credit_balance_cents', 'balance', 'saldo', 'creditos', 'credits']);
       balanceCents = foundBalance ? parseMoney(foundBalance.value, foundBalance.key) ?? null : null;
       if (balanceCents !== null) {
