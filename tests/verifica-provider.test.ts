@@ -34,8 +34,8 @@ describe('adaptador Verifica Online', () => {
     expect(result.provider).toBe('verifica-online');
     expect(result.cost_cents).toBe(399);
     expect(result.normalized.nome).toBe('Maria Silva');
-    expect(result.normalized.cpf).toBe('***4725');
-    expect(result.normalized.telefones).toEqual(['****9999']);
+    expect(result.normalized.cpf).toBe('52998224725');
+    expect(result.normalized.telefones).toEqual(['5511999999999']);
     expect(result.normalized.emails).toEqual(['maria@example.com']);
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -114,9 +114,9 @@ describe('adaptador Verifica Online', () => {
 
     expect(result.ok).toBe(true);
     expect(result.normalized.marca_modelo).toBe('Fiat/Uno');
-    expect(result.normalized.renavam).toBe('***8901');
-    expect(result.normalized.chassi).toBe('***1234');
-    expect(result.normalized.proprietario.documento).toBe('***8909');
+    expect(result.normalized.renavam).toBe('12345678901');
+    expect(result.normalized.chassi).toBe('9BD12345678901234');
+    expect(result.normalized.proprietario.documento).toBe('12345678909');
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.verifica-online.test/datasets/veicular_completa/queries');
     expect(JSON.parse(String(init.body))).toEqual({ plate: 'ABC1D23' });

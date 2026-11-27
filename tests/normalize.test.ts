@@ -16,9 +16,9 @@ describe('normalizadores da APIBrasil', () => {
       '52998224725',
     );
     expect(result.entity).toBe('PF');
-    expect(result.cpf).toBe('***4725');
+    expect(result.cpf).toBe('52998224725');
     expect(result.nome).toBe('PESSOA EXEMPLO');
-    expect(result.telefones).toEqual(['****1234']);
+    expect(result.telefones).toEqual(['11999991234']);
   });
 
   it('normaliza parentes e ligações pessoais do CPF', () => {
@@ -46,14 +46,14 @@ describe('normalizadores da APIBrasil', () => {
     );
     expect(result.nome).toBe('POLICIA TESTE');
     expect(result.situacao_cadastral).toBe('REGULAR');
-    expect(result.telefones).toEqual(['****9999']);
+    expect(result.telefones).toEqual(['11999999999']);
     expect(result.parentes[0].nome).toBe('PARENTE TESTE');
     expect(result.parentes[0].vinculo).toBe('IRMA');
     expect(result.pessoas_contato).toHaveLength(1);
     expect(result.vinculos_trabalho).toHaveLength(1);
   });
 
-  it('normaliza veículo e mascara proprietário', () => {
+  it('normaliza veículo e mantém documento do proprietário completo', () => {
     const result = normalizeVehicle(
       'apibrasil',
       { dados: { placa: 'ABC1D23', marca: 'FABRICANTE', modelo: 'MODELO', proprietario: { nome: 'PROPRIETARIO', documento: '52998224725' } } },
@@ -61,8 +61,8 @@ describe('normalizadores da APIBrasil', () => {
       'ABC1D23',
     );
     expect(result.marca_modelo).toBe('FABRICANTE/MODELO');
-    expect(result.consulta.valor).toBe('ABC***3');
-    expect(result.proprietario.documento).toBe('***4725');
+    expect(result.consulta.valor).toBe('ABC1D23');
+    expect(result.proprietario.documento).toBe('52998224725');
   });
 
   it('normaliza alertas de roubo e furto da placa', () => {
@@ -103,7 +103,7 @@ describe('normalizadores da APIBrasil', () => {
     );
     expect(result.cnae).toBe('6201501 - DESENVOLVIMENTO');
     expect(result.endereco).toBe('RUA, 1, CIDADE, SP');
-    expect(result.cnpj).toBe('***0161');
+    expect(result.cnpj).toBe('11444777000161');
   });
 
   it('normaliza empresa no formato do serviço cnpj', () => {

@@ -90,6 +90,7 @@ describe('execução de consultas', () => {
     expect(provider.queryPfCpf).toHaveBeenCalledWith('52998224725', {
       serviceName: 'dados-cadastrais',
       path: '/consulta/cpf/credits',
+      dataset: 'cpf_dados_completos',
     });
     expect(result.charged_cents).toBe(70);
   });

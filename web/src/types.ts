@@ -106,6 +106,14 @@ export interface ApiModule {
   cost_cents: number;
   balance_cents: number | null;
   source: string;
+  entity: string | null;
+  key_type: string | null;
+  mode: string;
+  dataset_key: string | null;
+  service_name: string | null;
+  active: boolean;
+  managed_by: string;
+  menu_order: number;
   updated_at: string;
 }
 

@@ -85,7 +85,7 @@ async function callProvider(
   mode: QueryMode,
   price: ResolvedPrice,
 ): Promise<ProviderResult> {
-  const options = { serviceName: price.serviceName, path: price.endpoint };
+  const options = { serviceName: price.serviceName, path: price.endpoint, dataset: price.datasetKey };
   if (entity === 'PF') {
     return provider.queryPfCpf(keyValue, options);
   }
@@ -110,6 +110,7 @@ export interface RunQueryInput {
   keyType: string;
   keyValue: string;
   mode?: QueryMode;
+  moduleKey?: string;
   provider?: QueryProvider;
 }
 
@@ -119,7 +120,7 @@ export async function runQuery(store: Store, input: RunQueryInput): Promise<Row>
   if (!(await checkRateLimit(store, 'query', input.userId))) {
     throw new PermissionError('Limite de consultas por minuto excedido');
   }
-  const keyHash = await sha256Hex(`${entity}:${keyType}:${mode}:${keyValue}`);
+  const keyHash = await sha256Hex(`${entity}:${keyType}:${mode}:${input.moduleKey ?? ''}:${keyValue}`);
   const now = new Date().toISOString();
   const cached = await store.selectById('query_cache', keyHash, 'key_hash');
   if (cached && !cached.is_mock && cached.expires_at && new Date(cached.expires_at).getTime() > Date.now()) {
@@ -150,7 +151,7 @@ export async function runQuery(store: Store, input: RunQueryInput): Promise<Row>
     return query;
   }
 
-  const price = await resolvePrice(store, entity, keyType, mode);
+  const price = await resolvePrice(store, entity, keyType, mode, input.moduleKey);
   assertSafeMargin(price);
 
   const query = await store.insert('queries', {

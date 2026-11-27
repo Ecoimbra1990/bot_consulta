@@ -1,4 +1,5 @@
 import { config } from './env.ts';
+import { CATALOG_MODULE_DEFAULTS } from './modules.ts';
 import type { Row, Store } from './types.ts';
 
 interface FoundValue {
@@ -267,6 +268,7 @@ async function fetchVerificaModules(alerts: string[]): Promise<Map<string, Row>>
         alerts.push(`Verifica Online: dataset ${datasetKey} sem preço positivo; módulo ${moduleKey} não foi atualizado`);
         continue;
       }
+      const defaults = CATALOG_MODULE_DEFAULTS[moduleKey];
       selected.set(moduleKey, {
         module_key: moduleKey,
         label: text(dataset.name ?? dataset.description ?? datasetKey, datasetKey),
@@ -274,6 +276,14 @@ async function fetchVerificaModules(alerts: string[]): Promise<Map<string, Row>>
         cost_cents: costCents,
         balance_cents: null,
         source: 'verifica-online',
+        entity: defaults?.entity ?? null,
+        key_type: defaults?.keyType ?? null,
+        mode: defaults?.mode ?? 'basic',
+        dataset_key: datasetKey,
+        service_name: datasetKey,
+        active: true,
+        managed_by: 'catalog',
+        menu_order: defaults?.menuOrder ?? 100,
         payload_json: { ...dataset, dataset_key: datasetKey },
         updated_at: new Date().toISOString(),
       });
@@ -340,6 +350,7 @@ export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
             alerts.push(`Módulo ${moduleKey}: preço ${priceCents} não cobre custo ${costCents}`);
           }
           selectionMeta.set(moduleKey, { rank, cost: costCents });
+          const defaults = CATALOG_MODULE_DEFAULTS[moduleKey];
           selected.set(moduleKey, {
             module_key: moduleKey,
             label: text(candidate.label ?? candidate.descricao ?? candidate.description ?? candidate.name ?? candidate.nome ?? service, moduleKey),
@@ -347,6 +358,14 @@ export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
             cost_cents: costCents,
             balance_cents: null,
             source: 'apibrasil',
+            entity: defaults?.entity ?? null,
+            key_type: defaults?.keyType ?? null,
+            mode: defaults?.mode ?? 'basic',
+            dataset_key: null,
+            service_name: service || defaults?.serviceName || null,
+            active: true,
+            managed_by: 'catalog',
+            menu_order: defaults?.menuOrder ?? 100,
             payload_json: { ...candidate, service_name: service },
             updated_at: new Date().toISOString(),
           });
@@ -357,6 +376,17 @@ export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
 
   for (const [moduleKey, row] of await fetchVerificaModules(alerts)) {
     selected.set(moduleKey, row);
+  }
+
+  const managedByAdmin = new Set(
+    (await store.select('api_modules', { limit: 500 }))
+      .filter((row) => row.managed_by === 'admin')
+      .map((row) => String(row.module_key)),
+  );
+  for (const moduleKey of managedByAdmin) {
+    if (selected.delete(moduleKey)) {
+      alerts.push(`Módulo ${moduleKey} gerenciado pelo administrador; sincronização automática ignorada`);
+    }
   }
 
   for (const row of selected.values()) {

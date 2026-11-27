@@ -1,7 +1,9 @@
 import { createClient } from 'npm:@supabase/supabase-js@^2.58.0';
 import { activateManualSubscription } from '../_shared/billing.ts';
 import { logAction } from '../_shared/audit.ts';
+import { syncApiCatalog } from '../_shared/catalog.ts';
 import { resolveDeletion } from '../_shared/dsr.ts';
+import { normalizeModuleInput } from '../_shared/modules.ts';
 import { updateRuntimeSettings } from '../_shared/settings.ts';
 import { createStore } from '../_shared/store.ts';
 import { linkTelegramAccount } from '../_shared/telegram-users.ts';
@@ -96,12 +98,12 @@ const CRUD_SPECS: Record<string, CrudSpec> = {
   subscriptions: { columns: ['user_id', 'plan_id', 'status', 'starts_at', 'ends_at', 'external_ref', 'payment_id'], label: 'subscription' },
   payments: { columns: ['user_id', 'plan_id', 'subscription_id', 'amount_cents', 'credit_cents', 'kind', 'telegram_chat_id', 'status', 'external_id', 'external_reference', 'checkout_url', 'error'], label: 'payment' },
   queries: { columns: ['entity', 'key_type', 'key_masked', 'status', 'cost_cents', 'charged_cents', 'module_key', 'error'], label: 'query' },
-  api_modules: { columns: ['module_key', 'label', 'endpoint', 'cost_cents', 'balance_cents'], label: 'api_module' },
+  api_modules: { columns: ['module_key', 'label', 'endpoint', 'cost_cents', 'balance_cents', 'source', 'entity', 'key_type', 'mode', 'dataset_key', 'service_name', 'active', 'managed_by', 'menu_order'], label: 'api_module' },
   user_telegram_accounts: { columns: ['telegram_id', 'user_id', 'username'], label: 'telegram_link' },
   dsr_requests: { columns: ['status'], label: 'dsr_request' },
 };
 
-const NUMERIC_COLUMNS = new Set(['telegram_id', 'telegram_chat_id', 'price_cents', 'credit_cents', 'period_days', 'queries_per_day', 'amount_cents', 'cost_cents', 'charged_cents', 'wallet_balance_cents']);
+const NUMERIC_COLUMNS = new Set(['telegram_id', 'telegram_chat_id', 'price_cents', 'credit_cents', 'period_days', 'queries_per_day', 'amount_cents', 'cost_cents', 'charged_cents', 'wallet_balance_cents', 'menu_order']);
 const REQUIRED_NON_NULL = new Set(['price_cents', 'amount_cents', 'cost_cents']);
 const TIMESTAMP_COLUMNS = new Set(['starts_at', 'ends_at']);
 const ENUM_VALUES: Record<string, string[]> = {
@@ -427,6 +429,64 @@ const handlers: Record<string, Handler> = {
     const approve = context.payload.approve === true || context.payload.approve === 'true';
     const result = await resolveDeletion(context.store, { requestId, actorUserId: context.actorId, approve });
     return result;
+  },
+  'module.create': async (context) => {
+    const row = normalizeModuleInput(context.payload);
+    const created = await context.store.insert('api_modules', row);
+    await logAction(context.store, {
+      actorUserId: context.actorId,
+      action: 'admin.api_module.create',
+      targetType: 'api_module',
+      targetId: String(created.module_key),
+      metadata: { entity: row.entity, key_type: row.key_type, mode: row.mode, source: row.source },
+    });
+    return created;
+  },
+  'module.update': async (context) => {
+    const moduleKey = String(context.payload.module_key ?? context.payload.moduleKey ?? context.payload.id ?? '');
+    const current = await context.store.selectById('api_modules', moduleKey, 'module_key');
+    if (!current) {
+      throw new Error('Módulo não encontrado');
+    }
+    const row = normalizeModuleInput({ ...current, ...context.payload, module_key: moduleKey });
+    const updated = await context.store.update('api_modules', moduleKey, row, 'module_key');
+    if (!updated) {
+      throw new Error('Módulo não encontrado');
+    }
+    await logAction(context.store, {
+      actorUserId: context.actorId,
+      action: 'admin.api_module.update',
+      targetType: 'api_module',
+      targetId: moduleKey,
+      metadata: { entity: row.entity, key_type: row.key_type, mode: row.mode, source: row.source, active: row.active },
+    });
+    return updated;
+  },
+  'module.delete': async (context) => {
+    const moduleKey = String(context.payload.module_key ?? context.payload.moduleKey ?? context.payload.id ?? '');
+    if (!moduleKey) {
+      throw new Error('Módulo obrigatório');
+    }
+    await context.store.remove('api_modules', moduleKey, 'module_key');
+    await logAction(context.store, {
+      actorUserId: context.actorId,
+      action: 'admin.api_module.delete',
+      targetType: 'api_module',
+      targetId: moduleKey,
+      metadata: {},
+    });
+    return { module_key: moduleKey, deleted: true };
+  },
+  'catalog.sync': async (context) => {
+    const result = await syncApiCatalog(context.store);
+    await logAction(context.store, {
+      actorUserId: context.actorId,
+      action: 'admin.catalog.sync',
+      targetType: 'api_catalog',
+      targetId: 'main',
+      metadata: { modules: result.modules, skipped: result.skipped },
+    });
+    return { ok: true, ...result };
   },
   'settings.update': async (context) => {
     const values = await updateRuntimeSettings(context.store, context.payload);

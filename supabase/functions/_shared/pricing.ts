@@ -1,4 +1,5 @@
 import { config } from './env.ts';
+import { activeModules } from './modules.ts';
 import type { Row, Store } from './types.ts';
 
 function configuredPrice(name: string, fallback: number): number {
@@ -66,6 +67,7 @@ export interface ResolvedPrice {
   moduleKey: string;
   endpoint: string;
   serviceName: string;
+  datasetKey: string;
   provider: QueryProviderName;
   costCents: number;
   priceCents: number;
@@ -100,6 +102,11 @@ function normalizeEndpoint(value: unknown): string {
   }
 }
 
+function datasetFromEndpoint(endpoint: string): string {
+  const match = endpoint.match(/\/datasets\/([a-z0-9_-]+)\/queries/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
 function rowServiceName(row: Row | undefined, moduleKey: string): string {
   const payload = row?.payload_json !== null && typeof row?.payload_json === 'object'
     ? row?.payload_json as Row
@@ -117,17 +124,37 @@ export async function resolvePrice(
   entity: string,
   keyType: string,
   mode: QueryMode = 'basic',
+  preferredModuleKey?: string,
 ): Promise<ResolvedPrice> {
-  const moduleKey = moduleKeyFor(entity, keyType, mode);
+  const canonicalKey = moduleKeyFor(entity, keyType, mode);
   const endpoint = endpointFor(entity, keyType, mode);
   const rows = await store.select('api_modules', { limit: 500 });
   const wantedEndpoint = normalizeEndpoint(endpoint);
-  const row = rows.find((item) => String(item.module_key ?? '') === moduleKey)
-    ?? rows.find((item) => normalizeEndpoint(item.endpoint) === wantedEndpoint && wantedEndpoint !== '');
+  const row = preferredModuleKey
+    ? rows.find((item) => String(item.module_key ?? '') === preferredModuleKey)
+    : rows.find((item) => String(item.module_key ?? '') === canonicalKey)
+      ?? rows.find((item) => normalizeEndpoint(item.endpoint) === wantedEndpoint && wantedEndpoint !== '');
+  if (preferredModuleKey && row) {
+    if (row.active === false) {
+      throw new Error(`Módulo ${preferredModuleKey} está inativo`);
+    }
+    const rowEntity = String(row.entity ?? entity).toUpperCase();
+    const rowKeyType = String(row.key_type ?? keyType).toLowerCase();
+    const rowMode = String(row.mode ?? 'basic').toLowerCase() === 'full' ? 'full' : 'basic';
+    if (rowEntity !== entity.toUpperCase() || rowKeyType !== keyType.toLowerCase() || rowMode !== mode) {
+      throw new Error(`Módulo ${preferredModuleKey} não corresponde à consulta solicitada`);
+    }
+  }
+  const moduleKey = preferredModuleKey ?? canonicalKey;
   const costCents = Math.max(0, Number.parseInt(String(row?.cost_cents ?? 0), 10) || 0);
   const fallback = fallbackPriceFor(entity, keyType, mode);
   const selectedEndpoint = normalizeEndpoint(row?.endpoint) || endpoint;
   const serviceName = rowServiceName(row, moduleKey);
+  const payload = row?.payload_json !== null && typeof row?.payload_json === 'object' ? row?.payload_json as Row : {};
+  const datasetKey = String(row?.dataset_key ?? payload.dataset_key ?? '').trim()
+    || datasetFromEndpoint(selectedEndpoint)
+    || DEFAULT_SERVICE_NAMES[moduleKey]
+    || '';
   const provider: QueryProviderName = row?.source === 'verifica-online' || (!row && VERIFICA_MODULES.has(moduleKey))
     ? 'verifica-online'
     : 'apibrasil';
@@ -138,6 +165,7 @@ export async function resolvePrice(
       moduleKey,
       endpoint: selectedEndpoint,
       serviceName,
+      datasetKey,
       provider,
       costCents,
       priceCents: Math.max(10, withMargin),
@@ -149,6 +177,7 @@ export async function resolvePrice(
     moduleKey,
     endpoint: selectedEndpoint,
     serviceName,
+    datasetKey,
     provider,
     costCents: 0,
     priceCents: fallback,
@@ -173,17 +202,25 @@ export function formatMoney(cents: number): string {
 }
 
 export async function priceTable(store: Store): Promise<string> {
-  const entries: Array<[string, string, string, QueryMode]> = [
-    ['CNPJ', 'EMPRESA', 'cnpj', 'basic'],
-    ['CPF', 'PF', 'cpf', 'basic'],
-    ['Telefone', 'TELEFONE', 'telefone', 'basic'],
-    ['Placa básica', 'VEICULO', 'placa', 'basic'],
-    ['Completa + furto/roubo', 'VEICULO', 'placa', 'full'],
-  ];
+  const modules = await activeModules(store);
   const lines = ['Tabela de preços (descontados do seu saldo):'];
-  for (const [label, entity, keyType, mode] of entries) {
-    const price = await resolvePrice(store, entity, keyType, mode);
-    lines.push(`${label}: ${formatMoney(price.priceCents)}`);
+  if (modules.length === 0) {
+    const entries: Array<[string, string, string, QueryMode]> = [
+      ['CNPJ', 'EMPRESA', 'cnpj', 'basic'],
+      ['CPF', 'PF', 'cpf', 'basic'],
+      ['Telefone', 'TELEFONE', 'telefone', 'basic'],
+      ['Placa básica', 'VEICULO', 'placa', 'basic'],
+      ['Completa + furto/roubo', 'VEICULO', 'placa', 'full'],
+    ];
+    for (const [label, entity, keyType, mode] of entries) {
+      const price = await resolvePrice(store, entity, keyType, mode);
+      lines.push(`${label}: ${formatMoney(price.priceCents)}`);
+    }
+  } else {
+    for (const module of modules) {
+      const price = await resolvePrice(store, module.entity, module.keyType, module.mode, module.moduleKey);
+      lines.push(`${module.label}: ${formatMoney(price.priceCents)}`);
+    }
   }
   lines.push('', 'Consultas em cache não cobram saldo.');
   return lines.join('\n');

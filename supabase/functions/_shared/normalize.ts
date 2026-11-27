@@ -1,4 +1,3 @@
-import { maskField, maskValue, sanitize } from './masking.ts';
 import type { Row } from './types.ts';
 
 function asObject(value: unknown): Row {
@@ -39,10 +38,10 @@ function relatedOf(value: unknown): Row[] {
     .filter((item): item is Row => item !== null && typeof item === 'object' && !Array.isArray(item))
     .map((item) => ({
       nome: scalar(firstDefined(item.nome, item.nm_completo, item.nome_completo, item.nomeCompleto)),
-      documento: item.documento ? maskField('documento', item.documento) : null,
-      cpf: item.cpf ? maskValue('cpf', String(item.cpf)) : null,
+      documento: item.documento ?? null,
+      cpf: item.cpf ?? null,
       vinculo: scalar(firstDefined(item.vinculo, item.ds_vinculo, item.parentesco, item.tipo, item.relacao)),
-      detalhes: sanitize(item),
+      detalhes: item,
     }));
 }
 
@@ -103,7 +102,7 @@ export function normalizePf(provider: string, raw: Row, cpf: string): Row {
   return {
     entity: 'PF',
     provider,
-    cpf: maskValue('cpf', cpf),
+    cpf,
     nome: scalar(firstDefined(identity.nome, federal.nome, cadastral.nome, cadastral.name)),
     situacao_cadastral: scalar(firstDefined(
       identity.situacao_receita,
@@ -119,15 +118,15 @@ export function normalizePf(provider: string, raw: Row, cpf: string): Row {
     nascimento: firstDefined(identity.data_nascimento, federal.data_nascimento, federal.nascimento, cadastral.data_nascimento, cadastral.dataNascimento),
     nome_mae: firstDefined(identity.mae, identity.nome_mae, federal.nome_mae, federal.mae, federal.nomeMae, cadastral.nome_mae, cadastral.nomeMae),
     sexo: scalar(firstDefined(identity.sexo, federal.sexo, federal.genero, cadastral.sexo)),
-    telefones: phones.map((phone) => maskValue('telefone', phone)),
-    enderecos: sanitize(firstDefined(itemsOf(data.pesquisa_enderecos), cadastral.somente_endereco, cadastral.enderecos, data.enderecos, [])),
+    telefones: phones,
+    enderecos: firstDefined(itemsOf(data.pesquisa_enderecos), cadastral.somente_endereco, cadastral.enderecos, data.enderecos, []),
     emails: emails.map((email) => String(email)),
     parentes: relatedOf(firstDefined(data.dados_parentes, cadastral.dados_parentes)),
     pessoas_contato: relatedOf(firstDefined(data.pessoas_contato, cadastral.pessoas_contato)),
     moradores_mesmo_domicilio: relatedOf(firstDefined(data.residentes_mesmo_domicilio, cadastral.residentes_mesmo_domicilio)),
     vinculos_trabalho: relatedOf(firstDefined(data.trabalha_trabalhou, cadastral.trabalha_trabalhou)),
-    participacao_em_empresas: sanitize(firstDefined(itemsOf(data.alerta_participacoes), cadastral.participacao_em_empresas, [])),
-    atributos: sanitize(cadastral),
+    participacao_em_empresas: firstDefined(itemsOf(data.alerta_participacoes), cadastral.participacao_em_empresas, []),
+    atributos: cadastral,
   };
 }
 
@@ -159,10 +158,10 @@ export function normalizeVehicle(provider: string, raw: Row, keyType: string, ke
   return {
     entity: 'VEICULO',
     provider,
-    consulta: { tipo: keyType, valor: maskValue(keyType, keyValue) },
+    consulta: { tipo: keyType, valor: keyValue },
     placa: firstDefined(vehicle.placa, alertVehicle.placa, data.placa),
-    renavam: renavam ? maskValue('renavam', String(renavam)) : null,
-    chassi: chassis ? maskValue('chassi', String(chassis)) : null,
+    renavam: renavam ?? null,
+    chassi: chassis ?? null,
     marca_modelo: brandModel,
     ano_fabricacao: firstDefined(vehicle.ano_fabricacao, vehicle.anoFabricacao, data.anoFabricacao),
     ano_modelo: firstDefined(vehicle.ano_modelo, vehicle.anoModelo, data.anoModelo),
@@ -170,16 +169,16 @@ export function normalizeVehicle(provider: string, raw: Row, keyType: string, ke
     situacao: scalar(firstDefined(vehicle.situacao, vehicle.status, alertBlock.indicadorProcedencia, data.situacao)),
     proprietario: {
       nome: firstDefined(owner.nome, owner.razao_social),
-      documento: owner.documento ? maskField('documento', owner.documento) : null,
+      documento: owner.documento ?? null,
     },
     alertas: {
       consta_ocorrencia: alertBlock.constaOcorrencia ?? null,
       consta_ocorrencia_ativa: alertBlock.constaOcorrenciaAtiva ?? null,
       municipio_emplacamento: alertBlock.municipioEmplacamento ?? null,
       procedencia: alertBlock.indicadorProcedencia ?? null,
-      historico: sanitize(history),
+      historico: history,
     },
-    atributos: sanitize(data),
+    atributos: data,
   };
 }
 
@@ -190,13 +189,13 @@ export function normalizeFleet(provider: string, raw: Row, cpf: string): Row {
   return {
     entity: 'VEICULO_FROTA',
     provider,
-    cpf: maskValue('cpf', cpf),
+    cpf,
     nome_proprietario: firstDefined(details.nome_proprietario, data.nome_proprietario),
     quantidade_veiculos: firstDefined(details.quantidade_veiculos, data.quantidade_veiculos),
     quantidade_declarada: firstDefined(details.quantidade_declarada, details.quantidade_veiculos_declarada),
     lista_parcial: details.lista_parcial,
-    veiculos: sanitize(vehicles),
-    atributos: sanitize(details),
+    veiculos: vehicles,
+    atributos: details,
   };
 }
 
@@ -213,17 +212,17 @@ export function normalizePhoneResult(provider: string, raw: Row, phone: string):
   return {
     entity: 'TELEFONE',
     provider,
-    telefone: maskValue('telefone', phone),
+    telefone: phone,
     titular: firstDefined(owner.nome, data.titular, data.nome),
-    documento: document ? maskField('documento', document) : null,
+    documento: document ?? null,
     ddd: data.ddd,
     operadora: firstDefined(data.operadora, data.carrier, data.operador),
     portabilidade: firstDefined(data.portabilidade, data.portability),
     localizacao: location,
     proprietarios: entries
       .filter((entry): entry is Row => entry !== null && typeof entry === 'object' && !Array.isArray(entry))
-      .map((entry) => ({ nome: entry.nome, documento: entry.documento ? maskField('documento', entry.documento) : null })),
-    atributos: sanitize(data),
+      .map((entry) => ({ nome: entry.nome, documento: entry.documento ?? null })),
+    atributos: data,
   };
 }
 
@@ -235,8 +234,8 @@ export function normalizePhoneOperator(raw: Row): Row {
   const portability = history.some((item) => String(asObject(item).mensagem || '').toLowerCase().includes('portabilidade'));
   return {
     operadora: firstDefined(current.prestadora, current.razao_social),
-    portabilidade: portability ? 'sim' : 'nao',
-    historico: sanitize(history),
+    portabilidade: portability ? 'sim' : 'não',
+    historico: history,
   };
 }
 
@@ -252,7 +251,7 @@ export function normalizePfOnline(provider: string, raw: Row, cpf: string): Row 
     .map((item) => {
       const phone = asObject(item);
       const number = firstDefined(phone.e164, [phone.area_code, phone.number].filter(Boolean).join(''));
-      return number ? maskValue('telefone', number) : null;
+      return number ?? null;
     })
     .filter(Boolean);
   const emails = asArray(data.emails)
@@ -262,7 +261,7 @@ export function normalizePfOnline(provider: string, raw: Row, cpf: string): Row 
   return {
     entity: 'PF',
     provider,
-    cpf: maskValue('cpf', cpf),
+    cpf,
     nome: firstDefined(basic.name, data.name),
     situacao_cadastral: firstDefined(basic.registration_status, data.registration_status),
     nascimento: firstDefined(basic.birth_date, data.birth_date),
@@ -270,13 +269,13 @@ export function normalizePfOnline(provider: string, raw: Row, cpf: string): Row 
     sexo: firstDefined(basic.sex, data.sex),
     telefones: phones,
     emails,
-    enderecos: sanitize(asArray(data.addresses)),
+    enderecos: asArray(data.addresses),
     parentes: [],
     pessoas_contato: [],
     moradores_mesmo_domicilio: [],
     vinculos_trabalho: [],
     participacao_em_empresas: [],
-    atributos: sanitize({ pai: basic.father_name, situacao_data: basic.registration_status_date, documentos: documents }),
+    atributos: { pai: basic.father_name, situacao_data: basic.registration_status_date, documentos: documents },
   };
 }
 
@@ -304,18 +303,18 @@ export function normalizeCompanyOnline(provider: string, raw: Row, cnpj: string)
   return {
     entity: 'EMPRESA',
     provider,
-    cnpj: maskValue('cnpj', cnpj),
+    cnpj,
     razao_social: firstDefined(company.legal_name, data.legal_name),
     nome_fantasia: firstDefined(establishment.trade_name, data.trade_name),
     situacao_cadastral: firstDefined(establishment.registration_status, data.registration_status),
     cnae: firstDefined(activity.description, data.cnae),
     endereco: addressValue || null,
-    atributos: sanitize({
+    atributos: {
       socios: data.partners,
       tributacao: data.simplified_tax,
       atividades_secundarias: establishment.secondary_activities,
       inscricoes: establishment.state_registrations,
-    }),
+    },
   };
 }
 
@@ -333,10 +332,10 @@ export function normalizeVehicleOnline(provider: string, raw: Row, keyType: stri
   return {
     entity: 'VEICULO',
     provider,
-    consulta: { tipo: keyType, valor: maskValue(keyType, keyValue) },
+    consulta: { tipo: keyType, valor: keyValue },
     placa: firstDefined(vehicle.plate, candidate.plate, keyValue),
-    renavam: renavam ? maskValue('renavam', renavam) : null,
-    chassi: chassis ? maskValue('chassi', chassis) : null,
+    renavam: renavam ?? null,
+    chassi: chassis ?? null,
     marca_modelo: brandModel,
     ano_fabricacao: firstDefined(vehicle.manufacture_year, candidate.manufacture_year),
     ano_modelo: firstDefined(vehicle.model_year, candidate.model_year),
@@ -344,7 +343,7 @@ export function normalizeVehicleOnline(provider: string, raw: Row, keyType: stri
     situacao: firstDefined(vehicle.status, candidate.status),
     proprietario: {
       nome: firstDefined(owner.name, data.owner_name),
-      documento: owner.document ? maskField('documento', owner.document) : null,
+      documento: owner.document ?? null,
     },
     alertas: {
       roubo_furto: firstDefined(indicators.theft, indicators.renainf),
@@ -353,12 +352,12 @@ export function normalizeVehicleOnline(provider: string, raw: Row, keyType: stri
       recall: indicators.recall ?? null,
       comunicacao_venda: indicators.sale_communication ?? null,
     },
-    atributos: sanitize({
+    atributos: {
       ...vehicle,
       fipe: data.fipe_candidates,
       registro: data.registration,
       indicadores: indicators,
-    }),
+    },
   };
 }
 
@@ -389,12 +388,12 @@ export function normalizeCompany(provider: string, raw: Row, cnpj: string): Row 
   return {
     entity: 'EMPRESA',
     provider,
-    cnpj: maskValue('cnpj', cnpj),
+    cnpj,
     razao_social: firstDefined(company.razao_social, details.razao_social, details.razaoSocial, details.nome, document.numero),
     nome_fantasia: firstDefined(details.nome_fantasia, details.nomeFantasia),
     situacao_cadastral: scalar(firstDefined(details.situacao_cadastral, status.descricao, details.situacao, document.status)),
     cnae: cnaeValue,
     endereco: addressValue || null,
-    atributos: sanitize(details),
+    atributos: details,
   };
 }

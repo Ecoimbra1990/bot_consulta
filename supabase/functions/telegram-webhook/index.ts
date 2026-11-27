@@ -4,7 +4,7 @@ import { logAction } from '../_shared/audit.ts';
 import { bootstrap, createPixTopup } from '../_shared/billing.ts';
 import { config, validateRuntime } from '../_shared/env.ts';
 import { acceptConsent, exportUserData, hasConsent, requestDeletion } from '../_shared/dsr.ts';
-import { maskCnpj, maskCpf, maskPhone } from '../_shared/masking.ts';
+import { activeModules, type ActiveModule } from '../_shared/modules.ts';
 import { normalizeVehicle } from '../_shared/normalize.ts';
 import { formatMoney, priceTable, resolvePrice, WELCOME_BONUS_CENTS } from '../_shared/pricing.ts';
 import { PermissionError, runQuery } from '../_shared/queries.ts';
@@ -32,20 +32,29 @@ function kbHomeReply(): Keyboard {
     .persistent(true);
 }
 
-function kbMain(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('Pessoa Física (CPF)', 'pf:cpf')
-    .row()
-    .text('Veículo (Placa)', 'veh:placa')
-    .row()
-    .text('Veículo (Renavam + CPF)', 'veh:renavam')
-    .row()
-    .text('Veículo (CPF atrelado)', 'veh:cpf')
-    .row()
-    .text('Telefone', 'phone:start')
-    .row()
-    .text('Empresa (CNPJ)', 'company:cnpj')
-    .row()
+async function kbMain(): Promise<InlineKeyboard> {
+  const modules = await activeModules(store);
+  const keyboard = new InlineKeyboard();
+  if (modules.length === 0) {
+    keyboard
+      .text('Pessoa Física (CPF)', 'pf:cpf')
+      .row()
+      .text('Veículo (Placa)', 'veh:placa')
+      .row()
+      .text('Veículo (Renavam + CPF)', 'veh:renavam')
+      .row()
+      .text('Veículo (CPF atrelado)', 'veh:cpf')
+      .row()
+      .text('Telefone', 'phone:start')
+      .row()
+      .text('Empresa (CNPJ)', 'company:cnpj')
+      .row();
+  } else {
+    for (const module of modules) {
+      keyboard.text(module.label.slice(0, 55), `module:${module.moduleKey}`).row();
+    }
+  }
+  return keyboard
     .text('Adicionar PIX', 'wallet:add')
     .row()
     .text('Minha conta', 'account');
@@ -69,6 +78,25 @@ function kbVehicleMode(): InlineKeyboard {
     .text('Completa + furto/roubo', 'vehmode:full')
     .row()
     .text('Voltar', 'home');
+}
+
+function modulePrompt(module: ActiveModule): string {
+  if (module.entity === 'PF') {
+    return `Informe o CPF para ${module.label}:`;
+  }
+  if (module.entity === 'EMPRESA') {
+    return `Informe o CNPJ para ${module.label}:`;
+  }
+  if (module.entity === 'TELEFONE') {
+    return `Informe o telefone com DDD para ${module.label}:`;
+  }
+  if (module.keyType === 'renavam') {
+    return `Informe o Renavam e o CPF do proprietário para ${module.label} (exemplo: 12345678901 52998224725):`;
+  }
+  if (module.keyType === 'cpf') {
+    return `Informe o CPF atrelado ao veículo para ${module.label}:`;
+  }
+  return `Informe a placa para ${module.label}:`;
 }
 
 function kbConsent(): InlineKeyboard {
@@ -169,58 +197,6 @@ async function detectInput(text: string): Promise<Detection | null> {
   return null;
 }
 
-function maskedDisplay(value: unknown, masker: (value: unknown) => string): string {
-  const text = value === null || value === undefined || value === '' ? '-' : String(value);
-  return text.includes('*') ? text : masker(text);
-}
-
-function summary(normalized: Row): string {
-  const entity = normalized.entity;
-  if (entity === 'PF') {
-    return [
-      'PF encontrada',
-      `Nome: ${normalized.nome ?? '-'}`,
-      `CPF: ${maskedDisplay(normalized.cpf, maskCpf)}`,
-      `Situação: ${normalized.situacao_cadastral ?? '-'}`,
-      `Nascimento: ${normalized.nascimento ?? '-'}`,
-      `Mãe: ${normalized.nome_mae ?? '-'}`,
-      `Parentes: ${Array.isArray(normalized.parentes) ? normalized.parentes.length : 0}`,
-    ].join('\n');
-  }
-  if (entity === 'EMPRESA') {
-    return [
-      'Empresa encontrada',
-      `Razão social: ${normalized.razao_social ?? '-'}`,
-      `Nome fantasia: ${normalized.nome_fantasia ?? '-'}`,
-      `CNPJ: ${maskedDisplay(normalized.cnpj, maskCnpj)}`,
-      `Situação: ${normalized.situacao_cadastral ?? '-'}`,
-      `CNAE: ${normalized.cnae ?? '-'}`,
-      `Endereço: ${normalized.endereco ?? '-'}`,
-    ].join('\n');
-  }
-  if (entity === 'TELEFONE') {
-    return [
-      'Telefone encontrado',
-      `Número: ${maskedDisplay(normalized.telefone, maskPhone)}`,
-      `Titular: ${normalized.titular ?? '-'}`,
-      `Operadora: ${normalized.operadora ?? '-'}`,
-      `Portabilidade: ${normalized.portabilidade ?? '-'}`,
-      `Localização: ${normalized.localizacao ?? '-'}`,
-    ].join('\n');
-  }
-  if (entity === 'VEICULO_FROTA') {
-    const vehicles = Array.isArray(normalized.veiculos) ? normalized.veiculos : [];
-    return `Frota encontrada\nCPF: ${maskCpf(normalized.cpf ?? '')}\nVeículos: ${vehicles.length}`;
-  }
-  return [
-    'Veículo encontrado',
-    `Placa: ${normalized.placa ?? '-'}`,
-    `Renavam: ${normalized.renavam ?? '-'}`,
-    `Modelo: ${normalized.marca_modelo ?? '-'}`,
-    `Situação: ${normalized.situacao ?? '-'}`,
-  ].join('\n');
-}
-
 function humanize(key: string): string {
   const labels: Record<string, string> = {
     cpf: 'CPF',
@@ -273,6 +249,52 @@ function humanize(key: string): string {
     quantidade_declarada: 'Quantidade declarada',
     lista_parcial: 'Lista parcial',
     historico: 'Histórico',
+    entity: 'Entidade',
+    provider: 'Provedor',
+    consulta: 'Consulta',
+    tipo: 'Tipo',
+    valor: 'Valor',
+    atributos: 'Outros atributos',
+    socios: 'Sócios',
+    tributacao: 'Tributação',
+    atividades_secundarias: 'Atividades secundárias',
+    inscricoes: 'Inscrições',
+    pai: 'Pai',
+    situacao_data: 'Data da situação',
+    documentos: 'Documentos',
+    roubo_furto: 'Roubo/furto',
+    leilao: 'Leilão',
+    comunicacao_venda: 'Comunicação de venda',
+    fipe: 'Fipe',
+    registro: 'Registro',
+    indicadores: 'Indicadores',
+    registration_status: 'Situação cadastral',
+    registration_status_date: 'Data da situação',
+    birth_date: 'Nascimento',
+    mother_name: 'Mãe',
+    father_name: 'Pai',
+    legal_name: 'Razão social',
+    trade_name: 'Nome fantasia',
+    primary_activity: 'Atividade principal',
+    secondary_activities: 'Atividades secundárias',
+    simplified_tax: 'Tributação simplificada',
+    state_registrations: 'Inscrições estaduais',
+    partners: 'Sócios',
+    name: 'Nome',
+    status: 'Situação',
+    theft: 'Roubo/furto',
+    auction: 'Leilão',
+    recall: 'Recall',
+    value: 'Valor',
+    country: 'País',
+    city: 'Cidade',
+    state: 'Estado',
+    street: 'Rua',
+    street_type: 'Tipo de logradouro',
+    number: 'Número',
+    complement: 'Complemento',
+    district: 'Bairro',
+    postal_code: 'CEP',
   };
   return labels[key] ?? key.replaceAll('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase());
 }
@@ -296,7 +318,10 @@ function displayValue(value: unknown): string {
   if (value === null || value === undefined || value === '') {
     return '-';
   }
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+  if (typeof value === 'boolean') {
+    return value ? 'sim' : 'não';
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
     return String(value);
   }
   if (Array.isArray(value)) {
@@ -319,25 +344,28 @@ function pushSection(lines: string[], title: string, value: unknown, skip?: Set<
       if (!entry || typeof entry !== 'object') {
         return displayValue(entry);
       }
-      return Object.entries(entry as Row)
+      const fields = Object.entries(entry as Row)
         .filter(([key, entryValue]) => !skip?.has(key) && entryValue !== null && entryValue !== undefined && entryValue !== '')
-        .map(([key, entryValue]) => `${humanize(key)}: ${displayValue(entryValue)}`)
-        .join(' | ');
+        .map(([key, entryValue]) => `${humanize(key)}: ${displayValue(entryValue)}`);
+      if (fields.length === 1) {
+        return fields[0].replace(/^[^:]*: /, '');
+      }
+      return fields.join(' | ');
     })
     .filter((item) => item !== '' && item !== '-');
 
   if (items.length === 0) {
     return;
   }
-  lines.push('', title);
+  lines.push('', `── ${title} ──`);
   for (const item of items) {
-    lines.push(`- ${item}`);
+    lines.push(`• ${item}`);
   }
 }
 
 function formatPfDetails(row: Row): string {
   const lines = [
-    'Detalhes PF',
+    'Dados da pessoa física',
     `Nome: ${displayValue(row.nome)}`,
     `CPF: ${displayValue(row.cpf)}`,
     `Situação cadastral: ${displayValue(row.situacao_cadastral)}`,
@@ -377,7 +405,7 @@ function formatPfDetails(row: Row): string {
 
 function formatCompanyDetails(row: Row): string {
   const lines = [
-    'Detalhes da empresa',
+    'Dados da empresa',
     `Razão social: ${displayValue(row.razao_social)}`,
     `Nome fantasia: ${displayValue(row.nome_fantasia)}`,
     `CNPJ: ${displayValue(row.cnpj)}`,
@@ -398,7 +426,7 @@ function formatCompanyDetails(row: Row): string {
 
 function formatPhoneDetails(row: Row): string {
   const lines = [
-    'Detalhes do telefone',
+    'Dados do telefone',
     `Número: ${displayValue(row.telefone)}`,
     `Titular: ${displayValue(row.titular)}`,
     `Documento: ${displayValue(row.documento)}`,
@@ -425,7 +453,7 @@ function formatPhoneDetails(row: Row): string {
 
 function formatVehicleDetails(row: Row): string {
   const lines = [
-    'Detalhes do veículo',
+    'Dados do veículo',
     `Placa: ${displayValue(row.placa)}`,
     `Renavam: ${displayValue(row.renavam)}`,
     `Chassi: ${displayValue(row.chassi)}`,
@@ -456,7 +484,7 @@ function formatVehicleDetails(row: Row): string {
 
 function formatFleetDetails(row: Row): string {
   const lines = [
-    'Detalhes da frota',
+    'Dados da frota',
     `CPF: ${displayValue(row.cpf)}`,
     `Nome do proprietário: ${displayValue(row.nome_proprietario)}`,
     `Quantidade de veículos: ${displayValue(row.quantidade_veiculos)}`,
@@ -476,7 +504,7 @@ function formatFleetDetails(row: Row): string {
 }
 
 function formatGenericDetails(row: Row): string {
-  const lines = ['Detalhes da consulta'];
+  const lines = ['Dados da consulta'];
   for (const [key, value] of Object.entries(row)) {
     if (value === null || value === undefined || value === '') {
       continue;
@@ -527,10 +555,10 @@ type ReplyContext = Context;
 async function replyInsufficient(
   ctx: ReplyContext,
   user: Row,
-  input: { entity: string; keyType: string; keyValue: string; mode?: 'basic' | 'full' },
+  input: { entity: string; keyType: string; keyValue: string; mode?: 'basic' | 'full'; moduleKey?: string },
 ): Promise<void> {
   try {
-    const price = await resolvePrice(store, input.entity, input.keyType, input.mode ?? 'basic');
+    const price = await resolvePrice(store, input.entity, input.keyType, input.mode ?? 'basic', input.moduleKey);
     const balance = await getWalletBalance(store, String(user.id));
     const missing = Math.max(0, price.priceCents - balance);
     await ctx.reply(
@@ -538,13 +566,13 @@ async function replyInsufficient(
       { reply_markup: await kbPackages() },
     );
   } catch {
-    await ctx.reply('Saldo insuficiente. Use Adicionar PIX para recarregar.', { reply_markup: kbMain() });
+    await ctx.reply('Saldo insuficiente. Use Adicionar PIX para recarregar.', { reply_markup: await kbMain() });
   }
 }
 
 async function runAndReply(
   ctx: ReplyContext,
-  input: { entity: string; keyType: string; keyValue: string; mode?: 'basic' | 'full'; renavamFilter?: string },
+  input: { entity: string; keyType: string; keyValue: string; mode?: 'basic' | 'full'; moduleKey?: string; renavamFilter?: string },
 ): Promise<void> {
   const tgUser = ctx.from!;
   const user = await findWalletUserByTelegram(store, tgUser.id);
@@ -560,6 +588,7 @@ async function runAndReply(
       keyType: input.keyType,
       keyValue: input.keyValue,
       mode: input.mode ?? 'basic',
+      moduleKey: input.moduleKey,
     });
   } catch (error) {
     if (error instanceof InsufficientBalanceError) {
@@ -584,7 +613,7 @@ async function runAndReply(
     },
   });
   if (query.status !== 'completed') {
-    await ctx.reply(`Consulta falhou: ${query.error || 'erro desconhecido'}. O valor reservado foi estornado.`, { reply_markup: kbMain() });
+    await ctx.reply(`Consulta falhou: ${query.error || 'erro desconhecido'}. O valor reservado foi estornado.`, { reply_markup: await kbMain() });
     return;
   }
   const result = await store.selectById('query_results', query.id, 'query_id');
@@ -593,16 +622,21 @@ async function runAndReply(
     const vehicles = Array.isArray(normalized.veiculos) ? normalized.veiculos : [];
     const match = vehicles.find((vehicle) => onlyDigits((vehicle as Row)?.renavam) === input.renavamFilter);
     if (!match) {
-      await ctx.reply('Renavam não encontrado na frota do CPF informado.', { reply_markup: kbMain() });
+      await ctx.reply('Renavam não encontrado na frota do CPF informado.', { reply_markup: await kbMain() });
       return;
     }
     normalized = normalizeVehicle('apibrasil', { data: match }, 'renavam', input.renavamFilter);
   }
   const balance = await getWalletBalance(store, String(user.id));
-  await ctx.reply(
-    `${summary(normalized)}\n\nCobrança: ${formatMoney(Number(query.charged_cents ?? 0))}. Saldo: ${formatMoney(balance)}.`,
-    { reply_markup: kbQuery(query.id) },
+  const pages = paginateText(
+    `${formatDetails(normalized)}\n\nCobrança: ${formatMoney(Number(query.charged_cents ?? 0))}\nSaldo: ${formatMoney(balance)}.`,
   );
+  for (let index = 0; index < pages.length; index += 1) {
+    const header = pages.length > 1 ? `Resposta ${index + 1}/${pages.length}\n\n` : '';
+    await ctx.reply(`${header}${pages[index]}`, {
+      reply_markup: index === pages.length - 1 ? kbQuery(query.id) : undefined,
+    });
+  }
 }
 
 bot.command('start', async (ctx) => {
@@ -611,7 +645,7 @@ bot.command('start', async (ctx) => {
   const user = await getOrCreateUser(ctx.from!);
   if (await hasConsent(store, user)) {
     const balance = await getWalletBalance(store, String(user.id));
-    await ctx.reply(homeText(balance), { reply_markup: kbMain() });
+    await ctx.reply(homeText(balance), { reply_markup: await kbMain() });
     await ctx.reply('Use o menu inferior para saldo, PIX, tabela e histórico.', { reply_markup: kbHomeReply() });
     return;
   }
@@ -654,14 +688,14 @@ bot.on('callback_query:data', async (ctx) => {
       const balance = (await grantWelcomeBonus(store, String(user.id), WELCOME_BONUS_CENTS))
         ?? (await getWalletBalance(store, String(user.id)));
       await ctx.reply(`Termos aceitos. Você recebeu ${formatMoney(WELCOME_BONUS_CENTS)} de bônus.`, { reply_markup: kbHomeReply() });
-      await ctx.reply(homeText(balance), { reply_markup: kbMain() });
+      await ctx.reply(homeText(balance), { reply_markup: await kbMain() });
       return;
     }
     if (data === 'home') {
       await clearState(key);
       const user = await findWalletUserByTelegram(store, tgUser.id);
       const balance = user ? await getWalletBalance(store, String(user.id)) : 0;
-      await ctx.reply(homeText(balance), { reply_markup: kbMain() });
+      await ctx.reply(homeText(balance), { reply_markup: await kbMain() });
       return;
     }
     if (data === 'account') {
@@ -785,6 +819,22 @@ bot.on('callback_query:data', async (ctx) => {
       await ctx.reply(selected.message);
       return;
     }
+    if (data.startsWith('module:')) {
+      const access = await ensureAccess(tgUser);
+      if (!access.ok) {
+        await ctx.reply(access.message);
+        return;
+      }
+      const moduleKey = data.slice('module:'.length);
+      const module = (await activeModules(store)).find((item) => item.moduleKey === moduleKey);
+      if (!module) {
+        await ctx.reply('Módulo não encontrado ou inativo.');
+        return;
+      }
+      await writeState(key, tgUser.id, 'module_input', { module_key: moduleKey });
+      await ctx.reply(modulePrompt(module));
+      return;
+    }
     if (data.startsWith('veh:')) {
       const access = await ensureAccess(tgUser);
       if (!access.ok) {
@@ -869,12 +919,12 @@ bot.on('message:text', async (ctx) => {
       return;
     }
     if (menu === 'Nova consulta') {
-      await ctx.reply(homeText(await getWalletBalance(store, String(user.id))), { reply_markup: kbMain() });
+      await ctx.reply(homeText(await getWalletBalance(store, String(user.id))), { reply_markup: await kbMain() });
       return;
     }
     const detected = await detectInput(text);
     if (!detected) {
-      await ctx.reply(homeText(await getWalletBalance(store, String(user.id))), { reply_markup: kbMain() });
+      await ctx.reply(homeText(await getWalletBalance(store, String(user.id))), { reply_markup: await kbMain() });
       return;
     }
     if (detected.state === 'detected_cnpj') {
@@ -884,6 +934,88 @@ bot.on('message:text', async (ctx) => {
     }
     await writeState(key, tgUser.id, detected.state, detected.data);
     await ctx.reply(detected.message, detected.keyboard ? { reply_markup: detected.keyboard } : undefined);
+    return;
+  }
+
+  if (state === 'module_input') {
+    await clearState(key);
+    const moduleKey = String(data.module_key ?? '');
+    const module = (await activeModules(store)).find((item) => item.moduleKey === moduleKey);
+    if (!module) {
+      await ctx.reply('Módulo não encontrado ou inativo.');
+      return;
+    }
+    const access = await ensureAccess(tgUser);
+    if (!access.ok) {
+      await ctx.reply(access.message);
+      return;
+    }
+    const parts = text.trim().split(/\s+/).filter(Boolean);
+    if (module.entity === 'PF') {
+      const cpf = onlyDigits(text);
+      if (!isValidCpf(cpf)) {
+        await ctx.reply('CPF inválido. Tente novamente.');
+        return;
+      }
+      await runAndReply(ctx, { entity: 'PF', keyType: 'cpf', keyValue: cpf, mode: module.mode, moduleKey });
+      return;
+    }
+    if (module.entity === 'EMPRESA') {
+      const cnpj = onlyDigits(text);
+      if (!isValidCnpj(cnpj)) {
+        await ctx.reply('CNPJ inválido. Tente novamente.');
+        return;
+      }
+      await runAndReply(ctx, { entity: 'EMPRESA', keyType: 'cnpj', keyValue: cnpj, mode: module.mode, moduleKey });
+      return;
+    }
+    if (module.entity === 'TELEFONE') {
+      const phone = normalizePhone(text);
+      if (!isValidPhone(phone)) {
+        await ctx.reply('Telefone inválido. Informe DDD + número.');
+        return;
+      }
+      await runAndReply(ctx, { entity: 'TELEFONE', keyType: 'telefone', keyValue: phone, mode: module.mode, moduleKey });
+      return;
+    }
+    if (module.keyType === 'renavam') {
+      const renavam = onlyDigits(parts[0] ?? '');
+      const cpf = onlyDigits(parts[1] ?? '');
+      if (!isValidRenavam(renavam) || !isValidCpf(cpf)) {
+        await ctx.reply('Renavam ou CPF inválido. Informe os dois valores no formato solicitado.');
+        return;
+      }
+      await runAndReply(ctx, {
+        entity: 'VEICULO',
+        keyType: 'cpf',
+        keyValue: cpf,
+        mode: module.mode,
+        moduleKey,
+        renavamFilter: renavam,
+      });
+      return;
+    }
+    if (module.keyType === 'placa') {
+      const plate = normalizePlate(parts[0] ?? '');
+      if (!isValidPlate(plate)) {
+        await ctx.reply('Placa inválida. Use formato ABC1234 ou ABC1D23.');
+        return;
+      }
+      await runAndReply(ctx, { entity: 'VEICULO', keyType: 'placa', keyValue: plate, mode: module.mode, moduleKey });
+      return;
+    }
+    const cpf = onlyDigits(parts[0] ?? '');
+    if (!isValidCpf(cpf)) {
+      await ctx.reply('CPF inválido. Tente novamente.');
+      return;
+    }
+    await runAndReply(ctx, {
+      entity: module.entity === 'VEICULO_FROTA' ? 'VEICULO_FROTA' : 'VEICULO',
+      keyType: 'cpf',
+      keyValue: cpf,
+      mode: module.mode,
+      moduleKey,
+    });
     return;
   }
 

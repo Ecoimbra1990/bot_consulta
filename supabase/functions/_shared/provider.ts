@@ -18,6 +18,7 @@ type Normalizer = (provider: string, raw: Row, key: string) => Row;
 export interface ServiceOptions {
   serviceName?: string;
   path?: string;
+  dataset?: string;
 }
 
 export interface QueryProvider {
@@ -45,6 +46,15 @@ const VERIFICA_INPUTS: Record<string, string> = {
   vehicle: 'plate',
   'full-vehicle': 'plate',
 };
+
+function datasetFromPath(path: string | undefined): string {
+  const match = String(path ?? '').match(/\/datasets\/([a-z0-9_-]+)\/queries/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function selectedDataset(kind: string, options: ServiceOptions): string {
+  return String(options.dataset ?? '').trim() || datasetFromPath(options.path) || VERIFICA_DATASETS[kind] || '';
+}
 
 function unavailable(message: string): ProviderResult {
   return { provider: 'apibrasil', ok: false, normalized: {}, raw: {}, error: message, cost_cents: 0 };
@@ -412,7 +422,7 @@ export class VerificaOnlineAdapter implements QueryProvider {
     if (!config.verificaOnline.apiKey) {
       return this.unavailable('VERIFICA_ONLINE_API_KEY não configurado');
     }
-    const dataset = VERIFICA_DATASETS[kind] ?? '';
+    const dataset = selectedDataset(kind, options);
     const inputField = VERIFICA_INPUTS[kind] ?? '';
     if (!dataset || !inputField) {
       return this.unavailable(`Consulta ${kind} não disponível na Verifica Online`);
