@@ -1,4 +1,4 @@
-# Bot Consulta (Supabase + Cloudflare Pages)
+# Bot Consulta (Supabase + Cloudflare Workers)
 
 MVP de consultas via Telegram usando **APIBrasil como único provedor** para Pessoa Física (CPF), Veículos (placa/Renavam/CPF atrelado), Telefone e Empresas (CNPJ), com painel admin web, assinaturas via Mercado Pago e retenção de dados conforme LGPD.
 
@@ -6,7 +6,7 @@ MVP de consultas via Telegram usando **APIBrasil como único provedor** para Pes
 
 - **Supabase Edge Functions (Deno/TypeScript)**: webhooks Telegram/Mercado Pago, API admin, `health`, expiração de assinaturas e expurgo de dados.
 - **Postgres + RLS**: usuários, planos, assinaturas, pagamentos, consultas, resultados, cache, consentimento, DSR, auditoria, sessões do bot e limitadores. service role fica apenas no backend.
-- **React + Vite + TypeScript + Tailwind**: painel administrativo servido como SPA estática na Cloudflare Pages.
+- **React + Vite + TypeScript + Tailwind**: painel administrativo servido como SPA estática via Cloudflare Workers Static Assets (`workers.dev`).
 - **pg_cron**: expiração diária de assinaturas e retenção de dados.
 
 ## Estrutura
@@ -14,7 +14,7 @@ MVP de consultas via Telegram usando **APIBrasil como único provedor** para Pes
 - `supabase/migrations/`: schema, funções, índices, RLS, cron e seed.
 - `supabase/functions/`: Edge Functions em Deno/TypeScript.
 - `supabase/functions/_shared/`: regras de negócio compartilhadas (crypto, billing, queries, DSR, provider, normalização).
-- `web/`: SPA administrativa.
+- `web/`: SPA administrativa e `wrangler.jsonc` dos Workers Static Assets.
 - `scripts/migrate/`: migração Firestore → Postgres com re-encriptação Fernet → AES-GCM.
 - `tests/`: testes Vitest das regras portadas.
 
@@ -51,14 +51,18 @@ Senhas bcrypt não são importáveis: recrie o usuário admin pelo Auth Admin AP
    - `supabase functions deploy expire-subscriptions`
    - `supabase functions deploy retention-purge`
 
-### Cloudflare Pages
+### Cloudflare Workers (workers.dev)
 
 - Root directory: `web`.
 - Framework preset: Vite.
 - Build command: `npm run build`.
+- Deploy command: `npm run deploy` (nunca deixe vazio nem use `None`).
 - Build output directory: `dist`.
+- `web/wrangler.jsonc` aponta `assets.directory` para `./dist` e usa `not_found_handling: single-page-application`.
 - Variáveis: `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY`.
-- `web/public/_redirects` já garante o fallback da SPA.
+- URL esperada: `https://bot-consulta.ankecs.workers.dev`.
+
+Se o projeto for Cloudflare Pages clássico, mantenha apenas build/output (`dist`) e use `true` como deploy command; não combine as duas configurações no mesmo projeto.
 
 ## Webhooks
 

@@ -25,11 +25,13 @@ npm run build
 npm run preview
 ```
 
-## Cloudflare Pages
+## Cloudflare Workers (workers.dev)
 
 - Framework preset: Vite
 - Build command: `npm run build`
-- Build output directory: `dist`
+- Deploy command: `npm run deploy`
 - Root directory: `web`
+- `wrangler.jsonc` aponta `assets.directory` para `./dist` e usa `not_found_handling: single-page-application`
 - Variáveis de ambiente: `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY`
-- O arquivo `public/_redirects` já cuida do fallback para SPA.
+
+Para Pages clássico, use apenas build command/output `dist` e deploy command `true`.
