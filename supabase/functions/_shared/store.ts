@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@^2.58.0';
 import type { QueryOptions, Row, Store } from './types.ts';
 
 export class SupabaseStore implements Store {

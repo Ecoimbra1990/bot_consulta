@@ -1,5 +1,5 @@
-import { Bot, InlineKeyboard, InputFile, webhookCallback } from 'grammy';
-import type { Context } from 'grammy';
+import { Bot, InlineKeyboard, InputFile, webhookCallback } from 'npm:grammy@^1.38.0';
+import type { Context } from 'npm:grammy@^1.38.0';
 import { logAction } from '../_shared/audit.ts';
 import { bootstrap, createCheckout } from '../_shared/billing.ts';
 import { config, validateRuntime } from '../_shared/env.ts';

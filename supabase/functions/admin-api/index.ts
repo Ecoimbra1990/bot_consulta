@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from 'npm:@supabase/supabase-js@^2.58.0';
 import { activateManualSubscription } from '../_shared/billing.ts';
 import { logAction } from '../_shared/audit.ts';
 import { resolveDeletion } from '../_shared/dsr.ts';
