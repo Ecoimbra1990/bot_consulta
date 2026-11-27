@@ -160,7 +160,7 @@ export async function createPixTopup(
       error: error instanceof Error ? error.message : String(error),
       updated_at: new Date().toISOString(),
     }, 'external_reference');
-    throw new Error('Não foi possível gerar o PIX');
+    throw error instanceof Error ? error : new Error(String(error));
   }
 }
 

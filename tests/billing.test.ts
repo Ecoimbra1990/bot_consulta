@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCheckout, createPixTopup, expireSubscriptions, mapPaymentStatus, processMercadoPagoPayment } from '../supabase/functions/_shared/billing.ts';
+import type { Row } from '../supabase/functions/_shared/types.ts';
 import { MemoryStore } from './helpers/memory-store.ts';
+
+class MissingPixColumnsStore extends MemoryStore {
+  override async update(table: string, id: string, patch: Row, idColumn = 'id'): Promise<Row | null> {
+    if (table === 'payments' && patch.qr_code !== undefined) {
+      throw new Error("Could not find the 'qr_code' column of 'payments' in the schema cache");
+    }
+    return super.update(table, id, patch, idColumn);
+  }
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -89,6 +99,33 @@ describe('billing', () => {
     const user = await store.selectById('users', 'u1');
     expect(user?.wallet_balance_cents).toBe(3500);
     expect(await store.select('wallet_transactions', { eq: { user_id: 'u1' } })).toHaveLength(1);
+  });
+
+  it('expõe a causa real quando falha ao gerar PIX', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      id: 123456,
+      status: 'pending',
+      point_of_interaction: {
+        transaction_data: {
+          qr_code: '00020126580014BR.GOV.BCB.PIX',
+          qr_code_base64: 'YmFzZTY0',
+        },
+      },
+    }), { status: 200 })));
+    const store = new MissingPixColumnsStore();
+    await store.insert('plans', {
+      id: 'pkg1',
+      name: 'Básico',
+      price_cents: 1500,
+      credit_cents: 1500,
+      active: true,
+      kind: 'package',
+    });
+    await expect(createPixTopup(store, {
+      userId: 'u1',
+      planId: 'pkg1',
+      email: 'cliente@example.com',
+    })).rejects.toThrow("Could not find the 'qr_code' column of 'payments' in the schema cache");
   });
 
   it('expira assinaturas vencidas', async () => {
