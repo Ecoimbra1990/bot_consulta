@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { CrudDialog, type CrudField } from '../components/CrudDialog';
+import { RowActions } from '../components/RowActions';
 import { Table, type TableColumn } from '../components/Table';
 import { getErrorMessage, invokeAdmin } from '../lib/api';
+import { formNumber, formText, toFormText, type CrudValue, type CrudValues } from '../lib/crud';
 import { formatDateTime } from '../lib/format';
 import { supabase } from '../lib/supabase';
 import type { User } from '../types';
@@ -28,6 +31,31 @@ const initialForm: NewUserForm = {
   status: 'pending',
 };
 
+const userFields: CrudField[] = [
+  { name: 'name', label: 'Nome' },
+  { name: 'telegram_id', label: 'Telegram ID', type: 'number' },
+  { name: 'email', label: 'E-mail' },
+  {
+    name: 'role',
+    label: 'Perfil',
+    type: 'select',
+    options: [
+      { value: 'user', label: 'Usuário' },
+      { value: 'admin', label: 'Admin' },
+    ],
+  },
+  {
+    name: 'status',
+    label: 'Status',
+    type: 'select',
+    options: [
+      { value: 'pending', label: 'Pendente' },
+      { value: 'active', label: 'Ativo' },
+      { value: 'blocked', label: 'Bloqueado' },
+    ],
+  },
+];
+
 export function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [count, setCount] = useState(0);
@@ -38,6 +66,9 @@ export function UsersPage() {
   const [form, setForm] = useState<NewUserForm>(initialForm);
   const [creating, setCreating] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<(CrudValues & { id: string }) | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -116,6 +147,68 @@ export function UsersPage() {
     }
   }
 
+  function startEdit(user: User) {
+    setActionError(null);
+    setEditing({
+      id: user.id,
+      name: toFormText(user.name),
+      telegram_id: toFormText(user.telegram_id),
+      email: toFormText(user.email),
+      role: user.role,
+      status: user.status,
+    });
+  }
+
+  function setEditField(name: string, value: CrudValue) {
+    setEditing((current) => (current ? { ...current, [name]: value } : current));
+  }
+
+  async function handleUpdate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editing) {
+      return;
+    }
+    setSavingId(editing.id);
+    setActionError(null);
+
+    try {
+      await invokeAdmin('crud.update', {
+        table: 'users',
+        id: editing.id,
+        patch: {
+          name: formText(editing, 'name'),
+          telegram_id: formNumber(editing, 'telegram_id'),
+          email: formText(editing, 'email').toLowerCase(),
+          role: formText(editing, 'role'),
+          status: formText(editing, 'status'),
+        },
+      });
+      setEditing(null);
+      await load();
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function handleDelete(user: User) {
+    if (!window.confirm(`Excluir o usuário ${user.name || user.email}?`)) {
+      return;
+    }
+    setDeletingId(user.id);
+    setActionError(null);
+
+    try {
+      await invokeAdmin('crud.delete', { table: 'users', id: user.id });
+      await load();
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   const columns: TableColumn<User>[] = [
     {
       header: 'Usuário',
@@ -155,6 +248,16 @@ export function UsersPage() {
       header: 'Criado em',
       render: (user) => <span className="whitespace-nowrap">{formatDateTime(user.created_at)}</span>,
     },
+    {
+      header: 'Ações',
+      render: (user) => (
+        <RowActions
+          disabled={savingId === user.id || deletingId === user.id}
+          onEdit={() => startEdit(user)}
+          onDelete={() => void handleDelete(user)}
+        />
+      ),
+    },
   ];
 
   const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE));
@@ -183,7 +286,7 @@ export function UsersPage() {
           </div>
           <div>
             <label className={labelClass} htmlFor="new-user-password">Senha</label>
-            <input id="new-user-password" type="password" required minLength={6} className={inputClass} value={form.password} onChange={(event) => setField('password', event.target.value)} />
+                <input id="new-user-password" type="password" required minLength={12} className={inputClass} value={form.password} onChange={(event) => setField('password', event.target.value)} />
           </div>
           <div>
             <label className={labelClass} htmlFor="new-user-role">Perfil</label>
@@ -244,6 +347,19 @@ export function UsersPage() {
             </div>
           </div>
         </>
+      )}
+
+      {editing && (
+        <CrudDialog
+          title={`Editar ${editing.name || editing.email}`}
+          fields={userFields}
+          values={editing}
+          onChange={setEditField}
+          onSubmit={(event) => void handleUpdate(event)}
+          onClose={() => setEditing(null)}
+          saving={savingId === editing.id}
+          error={actionError}
+        />
       )}
     </div>
   );

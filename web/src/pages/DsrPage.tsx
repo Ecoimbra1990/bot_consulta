@@ -1,11 +1,27 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { CrudDialog, type CrudField } from '../components/CrudDialog';
+import { RowActions } from '../components/RowActions';
 import { Table, type TableColumn } from '../components/Table';
 import { getErrorMessage, invokeAdmin } from '../lib/api';
+import { formText, toFormText, type CrudValue, type CrudValues } from '../lib/crud';
 import { formatDateTime } from '../lib/format';
 import { supabase } from '../lib/supabase';
 import type { DsrRequest, User } from '../types';
 
 type UserSummary = Pick<User, 'id' | 'name' | 'email'>;
+
+const dsrFields: CrudField[] = [
+  {
+    name: 'status',
+    label: 'Status',
+    type: 'select',
+    options: [
+      { value: 'pending', label: 'Pendente' },
+      { value: 'done', label: 'Concluída' },
+      { value: 'rejected', label: 'Rejeitada' },
+    ],
+  },
+];
 
 export function DsrPage() {
   const [requests, setRequests] = useState<DsrRequest[]>([]);
@@ -14,6 +30,9 @@ export function DsrPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<(CrudValues & { id: string }) | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,6 +77,55 @@ export function DsrPage() {
     }
   }
 
+  function startEdit(request: DsrRequest) {
+    setActionError(null);
+    setEditing({ id: request.id, status: toFormText(request.status) });
+  }
+
+  function setEditField(name: string, value: CrudValue) {
+    setEditing((current) => (current ? { ...current, [name]: value } : current));
+  }
+
+  async function handleUpdate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editing) {
+      return;
+    }
+    setSavingId(editing.id);
+    setActionError(null);
+
+    try {
+      await invokeAdmin('crud.update', {
+        table: 'dsr_requests',
+        id: editing.id,
+        patch: { status: formText(editing, 'status') },
+      });
+      setEditing(null);
+      await load();
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function handleDelete(request: DsrRequest) {
+    if (!window.confirm(`Remover a solicitação ${request.id.slice(0, 8)}?`)) {
+      return;
+    }
+    setDeletingId(request.id);
+    setActionError(null);
+
+    try {
+      await invokeAdmin('crud.delete', { table: 'dsr_requests', id: request.id });
+      await load();
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   const emailById = new Map(users.map((user) => [user.id, user.email] as const));
   const nameById = new Map(users.map((user) => [user.id, user.name] as const));
 
@@ -89,7 +157,7 @@ export function DsrPage() {
             onClick={() => void handleResolve(request, true)}
             className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Excluir
+            Aprovar exclusão
           </button>
           <button
             type="button"
@@ -100,6 +168,17 @@ export function DsrPage() {
             Rejeitar
           </button>
         </div>
+      ),
+    },
+    {
+      header: 'CRUD',
+      render: (request) => (
+        <RowActions
+          disabled={savingId === request.id || deletingId === request.id || resolvingId === request.id}
+          onEdit={() => startEdit(request)}
+          onDelete={() => void handleDelete(request)}
+          deleteLabel="Remover"
+        />
       ),
     },
   ];
@@ -118,6 +197,19 @@ export function DsrPage() {
         <p className="text-sm text-slate-400">Carregando...</p>
       ) : (
         <Table columns={columns} rows={requests} rowKey={(request) => request.id} empty="Nenhuma solicitação pendente." />
+      )}
+
+      {editing && (
+        <CrudDialog
+          title="Editar solicitação DSR"
+          fields={dsrFields}
+          values={editing}
+          onChange={setEditField}
+          onSubmit={(event) => void handleUpdate(event)}
+          onClose={() => setEditing(null)}
+          saving={savingId === editing.id}
+          error={actionError}
+        />
       )}
     </div>
   );

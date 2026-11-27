@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { CrudDialog, type CrudField } from '../components/CrudDialog';
+import { RowActions } from '../components/RowActions';
 import { Table, type TableColumn } from '../components/Table';
 import { getErrorMessage, invokeAdmin } from '../lib/api';
+import { formBool, formNumber, formText, toFormBool, toFormDateTime, toFormText, type CrudValue, type CrudValues } from '../lib/crud';
 import { formatCurrency, formatDateTime } from '../lib/format';
 import { supabase } from '../lib/supabase';
 import type { Plan, Subscription, User } from '../types';
@@ -36,6 +39,31 @@ const initialPlanForm: PlanForm = {
   active: true,
 };
 
+const subscriptionFields: CrudField[] = [
+  {
+    name: 'status',
+    label: 'Status',
+    type: 'select',
+    options: [
+      { value: 'active', label: 'Ativa' },
+      { value: 'past_due', label: 'Em atraso' },
+      { value: 'canceled', label: 'Cancelada' },
+      { value: 'expired', label: 'Expirada' },
+    ],
+  },
+  { name: 'starts_at', label: 'Início', type: 'datetime-local' },
+  { name: 'ends_at', label: 'Fim', type: 'datetime-local' },
+  { name: 'external_ref', label: 'Referência externa' },
+];
+
+const planFields: CrudField[] = [
+  { name: 'name', label: 'Nome' },
+  { name: 'price_cents', label: 'Preço (centavos)', type: 'number' },
+  { name: 'period_days', label: 'Duração (dias)', type: 'number' },
+  { name: 'queries_per_day', label: 'Consultas por dia', type: 'number' },
+  { name: 'active', label: 'Plano ativo', type: 'checkbox' },
+];
+
 type UserSummary = Pick<User, 'id' | 'name' | 'email'>;
 
 export function SubscriptionsPage() {
@@ -49,6 +77,10 @@ export function SubscriptionsPage() {
   const [planForm, setPlanForm] = useState<PlanForm>(initialPlanForm);
   const [activating, setActivating] = useState(false);
   const [creatingPlan, setCreatingPlan] = useState(false);
+  const [editingSubscription, setEditingSubscription] = useState<(CrudValues & { id: string }) | null>(null);
+  const [editingPlan, setEditingPlan] = useState<(CrudValues & { id: string }) | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -129,6 +161,111 @@ export function SubscriptionsPage() {
     }
   }
 
+  function startEditSubscription(subscription: Subscription) {
+    setActionError(null);
+    setEditingSubscription({
+      id: subscription.id,
+      status: subscription.status,
+      starts_at: toFormDateTime(subscription.starts_at),
+      ends_at: toFormDateTime(subscription.ends_at),
+      external_ref: toFormText(subscription.external_ref),
+    });
+  }
+
+  function startEditPlan(plan: Plan) {
+    setActionError(null);
+    setEditingPlan({
+      id: plan.id,
+      name: toFormText(plan.name),
+      price_cents: toFormText(plan.price_cents),
+      period_days: toFormText(plan.period_days),
+      queries_per_day: toFormText(plan.queries_per_day),
+      active: toFormBool(plan.active),
+    });
+  }
+
+  function setEditSubscriptionField(name: string, value: CrudValue) {
+    setEditingSubscription((current) => (current ? { ...current, [name]: value } : current));
+  }
+
+  function setEditPlanField(name: string, value: CrudValue) {
+    setEditingPlan((current) => (current ? { ...current, [name]: value } : current));
+  }
+
+  async function handleUpdateSubscription(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingSubscription) {
+      return;
+    }
+    setSavingId(editingSubscription.id);
+    setActionError(null);
+
+    try {
+      await invokeAdmin('crud.update', {
+        table: 'subscriptions',
+        id: editingSubscription.id,
+        patch: {
+          status: formText(editingSubscription, 'status'),
+          starts_at: formText(editingSubscription, 'starts_at') || null,
+          ends_at: formText(editingSubscription, 'ends_at') || null,
+          external_ref: formText(editingSubscription, 'external_ref') || null,
+        },
+      });
+      setEditingSubscription(null);
+      await load();
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function handleUpdatePlan(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingPlan) {
+      return;
+    }
+    setSavingId(editingPlan.id);
+    setActionError(null);
+
+    try {
+      await invokeAdmin('crud.update', {
+        table: 'plans',
+        id: editingPlan.id,
+        patch: {
+          name: formText(editingPlan, 'name'),
+          price_cents: formNumber(editingPlan, 'price_cents'),
+          period_days: formNumber(editingPlan, 'period_days'),
+          queries_per_day: formNumber(editingPlan, 'queries_per_day'),
+          active: formBool(editingPlan, 'active'),
+        },
+      });
+      setEditingPlan(null);
+      await load();
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function handleDelete(table: string, id: string, label: string) {
+    if (!window.confirm(`Excluir ${label}?`)) {
+      return;
+    }
+    setDeletingId(id);
+    setActionError(null);
+
+    try {
+      await invokeAdmin('crud.delete', { table, id });
+      await load();
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   const emailById = new Map(users.map((user) => [user.id, user.email] as const));
   const nameById = new Map(users.map((user) => [user.id, user.name] as const));
   const planById = new Map(plans.map((plan) => [plan.id, plan] as const));
@@ -164,6 +301,40 @@ export function SubscriptionsPage() {
     {
       header: 'Referência',
       render: (subscription) => <span className="font-mono text-xs">{subscription.external_ref ?? '-'}</span>,
+    },
+    {
+      header: 'Ações',
+      render: (subscription) => (
+        <RowActions
+          disabled={savingId === subscription.id || deletingId === subscription.id}
+          onEdit={() => startEditSubscription(subscription)}
+          onDelete={() => void handleDelete('subscriptions', subscription.id, 'a assinatura')}
+        />
+      ),
+    },
+  ];
+
+  const planColumns: TableColumn<Plan>[] = [
+    { header: 'Nome', render: (plan) => <span className="font-medium text-white">{plan.name}</span> },
+    { header: 'Preço', render: (plan) => formatCurrency(plan.price_cents) },
+    { header: 'Duração', render: (plan) => <span className="whitespace-nowrap">{plan.period_days} dias</span> },
+    {
+      header: 'Ativo',
+      render: (plan) => (
+        <span className={`rounded-full px-2 py-1 text-xs ${plan.active ? 'bg-emerald-500/15 text-emerald-300' : 'bg-slate-700 text-slate-300'}`}>
+          {plan.active ? 'sim' : 'não'}
+        </span>
+      ),
+    },
+    {
+      header: 'Ações',
+      render: (plan) => (
+        <RowActions
+          disabled={savingId === plan.id || deletingId === plan.id}
+          onEdit={() => startEditPlan(plan)}
+          onDelete={() => void handleDelete('plans', plan.id, `o plano ${plan.name}`)}
+        />
+      ),
     },
   ];
 
@@ -254,6 +425,15 @@ export function SubscriptionsPage() {
       {loadError && <p className="rounded-md bg-red-500/10 px-4 py-3 text-sm text-red-300">{loadError}</p>}
 
       <section className="space-y-4">
+        <h2 className="text-lg font-semibold text-white">Planos</h2>
+        {loading ? (
+          <p className="text-sm text-slate-400">Carregando...</p>
+        ) : (
+          <Table columns={planColumns} rows={plans} rowKey={(plan) => plan.id} />
+        )}
+      </section>
+
+      <section className="space-y-4">
         <h2 className="text-lg font-semibold text-white">Lista de assinaturas</h2>
         {loading ? (
           <p className="text-sm text-slate-400">Carregando...</p>
@@ -261,6 +441,32 @@ export function SubscriptionsPage() {
           <Table columns={columns} rows={subscriptions} rowKey={(subscription) => subscription.id} />
         )}
       </section>
+
+      {editingSubscription && (
+        <CrudDialog
+          title="Editar assinatura"
+          fields={subscriptionFields}
+          values={editingSubscription}
+          onChange={setEditSubscriptionField}
+          onSubmit={(event) => void handleUpdateSubscription(event)}
+          onClose={() => setEditingSubscription(null)}
+          saving={savingId === editingSubscription.id}
+          error={actionError}
+        />
+      )}
+
+      {editingPlan && (
+        <CrudDialog
+          title="Editar plano"
+          fields={planFields}
+          values={editingPlan}
+          onChange={setEditPlanField}
+          onSubmit={(event) => void handleUpdatePlan(event)}
+          onClose={() => setEditingPlan(null)}
+          saving={savingId === editingPlan.id}
+          error={actionError}
+        />
+      )}
     </div>
   );
 }

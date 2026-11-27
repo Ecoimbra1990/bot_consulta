@@ -19,6 +19,7 @@ export interface Plan {
   name: string;
   price_cents: number;
   period_days: number;
+  queries_per_day: number | null;
   active: boolean;
   created_at: string;
 }

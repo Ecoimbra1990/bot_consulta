@@ -37,6 +37,14 @@ function json(body: unknown, status: number, request: Request): Response {
   return Response.json(body, { status, headers: corsHeaders(request) });
 }
 
+function serviceClient() {
+  return createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+    { auth: { persistSession: false, autoRefreshToken: false } },
+  );
+}
+
 async function createUser(context: AdminContext): Promise<Row> {
   const { store, payload } = context;
   const email = String(payload.email ?? '').trim().toLowerCase();
@@ -58,7 +66,7 @@ async function createUser(context: AdminContext): Promise<Row> {
   if (created.error) {
     throw new Error(created.error.message);
   }
-  const authUserId = created.user?.id;
+  const authUserId = created.data.user?.id;
   if (!authUserId) {
     throw new Error('Falha ao criar usuário no Supabase Auth');
   }
@@ -73,6 +81,171 @@ async function createUser(context: AdminContext): Promise<Row> {
     created_at: new Date().toISOString(),
   });
   return user;
+}
+
+interface CrudSpec {
+  columns: string[];
+  label: string;
+}
+
+const CRUD_SPECS: Record<string, CrudSpec> = {
+  users: { columns: ['name', 'telegram_id', 'email', 'role', 'status'], label: 'user' },
+  plans: { columns: ['name', 'price_cents', 'period_days', 'active', 'queries_per_day'], label: 'plan' },
+  subscriptions: { columns: ['user_id', 'plan_id', 'status', 'starts_at', 'ends_at', 'external_ref', 'payment_id'], label: 'subscription' },
+  payments: { columns: ['user_id', 'plan_id', 'subscription_id', 'amount_cents', 'status', 'external_id', 'external_reference', 'checkout_url', 'error'], label: 'payment' },
+  queries: { columns: ['entity', 'key_type', 'key_masked', 'status', 'cost_cents', 'error'], label: 'query' },
+  dsr_requests: { columns: ['status'], label: 'dsr_request' },
+};
+
+const NUMERIC_COLUMNS = new Set(['telegram_id', 'price_cents', 'period_days', 'queries_per_day', 'amount_cents', 'cost_cents']);
+const REQUIRED_NON_NULL = new Set(['price_cents', 'period_days', 'amount_cents', 'cost_cents']);
+const TIMESTAMP_COLUMNS = new Set(['starts_at', 'ends_at']);
+const ENUM_VALUES: Record<string, string[]> = {
+  role: ['admin', 'user'],
+  entity: ['PF', 'EMPRESA', 'TELEFONE', 'VEICULO', 'VEICULO_FROTA'],
+};
+
+const STATUS_BY_TABLE: Record<string, string[]> = {
+  users: ['active', 'blocked', 'pending'],
+  subscriptions: ['active', 'past_due', 'canceled', 'expired'],
+  payments: ['pending', 'paid', 'failed', 'manual'],
+  queries: ['pending', 'completed', 'failed'],
+  dsr_requests: ['pending', 'done', 'rejected'],
+};
+
+function normalizeCrudPatch(table: string, payload: Row): Row {
+  const spec = CRUD_SPECS[table];
+  if (!spec) {
+    throw new Error(`Tabela não permitida: ${table}`);
+  }
+  const patch: Row = {};
+  for (const column of spec.columns) {
+    if (!(column in payload)) {
+      continue;
+    }
+    let value = payload[column];
+    if (NUMERIC_COLUMNS.has(column)) {
+      if (value === '' || value === null || value === undefined) {
+        if (REQUIRED_NON_NULL.has(column)) {
+          throw new Error(`${column} é obrigatório`);
+        }
+        patch[column] = null;
+        continue;
+      }
+      value = Number(value);
+      if (!Number.isFinite(value)) {
+        throw new Error(`${column} inválido`);
+      }
+      if ((column === 'price_cents' || column === 'period_days' || column === 'telegram_id') && value <= 0) {
+        throw new Error(`${column} inválido`);
+      }
+    } else if (column === 'active') {
+      value = value === true || value === 'true' || value === 'on';
+    } else if (typeof value === 'string') {
+      value = value.trim();
+    }
+    if (TIMESTAMP_COLUMNS.has(column) && value !== null && value !== '') {
+      const timestamp = Date.parse(String(value));
+      if (!Number.isFinite(timestamp)) {
+        throw new Error(`${column} inválido`);
+      }
+      value = new Date(timestamp).toISOString();
+    }
+    const allowed = column === 'status' ? STATUS_BY_TABLE[table] : ENUM_VALUES[column];
+    if (allowed && value !== null && value !== '' && !allowed.includes(String(value))) {
+      throw new Error(`${column} inválido`);
+    }
+    patch[column] = value;
+  }
+  if (Object.keys(patch).length === 0) {
+    throw new Error('Nenhum campo para atualizar');
+  }
+  return patch;
+}
+
+async function updateUser(context: AdminContext, userId: string, patch: Row): Promise<Row> {
+  const current = await context.store.selectById('users', userId);
+  if (!current) {
+    throw new Error('Usuário não encontrado');
+  }
+  if (userId === context.actorId && (patch.role === 'user' || (patch.status && patch.status !== 'active'))) {
+    throw new Error('Você não pode alterar seu próprio perfil ou status');
+  }
+  const email = String(patch.email ?? current.email ?? '').trim().toLowerCase();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error('E-mail inválido');
+  }
+  const role = ['admin', 'user'].includes(String(patch.role ?? current.role)) ? String(patch.role ?? current.role) : 'user';
+  const statusValue = String(patch.status ?? current.status);
+  const status = ['active', 'blocked', 'pending'].includes(statusValue) ? statusValue : 'pending';
+  const name = String(patch.name ?? current.name ?? '').trim() || null;
+  const telegramRaw = patch.telegram_id !== undefined ? patch.telegram_id : current.telegram_id;
+  const telegramId = telegramRaw === null || telegramRaw === '' || telegramRaw === undefined ? null : Number(telegramRaw);
+  if (telegramId !== null && (!Number.isSafeInteger(telegramId) || telegramId <= 0)) {
+    throw new Error('Telegram ID inválido');
+  }
+  const authUserId = current.auth_user_id ? String(current.auth_user_id) : null;
+  if (authUserId) {
+    const admin = serviceClient();
+    const { data: authData, error: authFetchError } = await admin.auth.admin.getUserById(authUserId);
+    if (authFetchError && !/not found/i.test(authFetchError.message)) {
+      throw new Error(authFetchError.message);
+    }
+    const appMetadata = { ...(authData?.user?.app_metadata ?? {}), role };
+    const { error: authUpdateError } = await admin.auth.admin.updateUserById(authUserId, {
+      email,
+      app_metadata: appMetadata,
+    });
+    if (authUpdateError) {
+      throw new Error(authUpdateError.message);
+    }
+  }
+  const updated = await context.store.update('users', userId, {
+    name,
+    email,
+    telegram_id: telegramId,
+    role,
+    status,
+  });
+  if (!updated) {
+    throw new Error('Usuário não encontrado');
+  }
+  await logAction(context.store, {
+    actorUserId: context.actorId,
+    action: 'user.update',
+    targetType: 'user',
+    targetId: userId,
+    metadata: { role, status, email },
+  });
+  return updated;
+}
+
+async function deleteUser(context: AdminContext, userId: string): Promise<Row> {
+  if (userId === context.actorId) {
+    throw new Error('Você não pode excluir seu próprio usuário');
+  }
+  const target = await context.store.selectById('users', userId);
+  if (!target) {
+    throw new Error('Usuário não encontrado');
+  }
+  if (target.auth_user_id) {
+    const { error } = await serviceClient().auth.admin.deleteUser(String(target.auth_user_id));
+    if (error && !/not found/i.test(error.message)) {
+      throw new Error(error.message);
+    }
+  }
+  if (target.telegram_id) {
+    await context.store.removeWhere('bot_sessions', 'telegram_id', target.telegram_id);
+  }
+  await context.store.remove('users', userId);
+  await logAction(context.store, {
+    actorUserId: context.actorId,
+    action: 'user.delete',
+    targetType: 'user',
+    targetId: userId,
+    metadata: { email: target.email },
+  });
+  return { id: userId, deleted: true };
 }
 
 const handlers: Record<string, Handler> = {
@@ -105,6 +278,62 @@ const handlers: Record<string, Handler> = {
       metadata: { status },
     });
     return updated;
+  },
+  'crud.update': async (context) => {
+    const table = String(context.payload.table ?? '');
+    const id = String(context.payload.id ?? context.payload.user_id ?? '');
+    if (!id) {
+      throw new Error('ID obrigatório');
+    }
+    const payload = (context.payload.patch ?? {}) as Row;
+    if (table === 'users') {
+      return updateUser(context, id, normalizeCrudPatch('users', payload));
+    }
+    const spec = CRUD_SPECS[table];
+    if (!spec) {
+      throw new Error(`Tabela não permitida: ${table}`);
+    }
+    const patch = normalizeCrudPatch(table, payload);
+    if (table === 'dsr_requests' && patch.status !== undefined) {
+      const resolved = patch.status === 'done' || patch.status === 'rejected';
+      patch.resolved_at = resolved ? new Date().toISOString() : null;
+      patch.resolved_by = resolved ? context.actorId : null;
+    }
+    const updated = await context.store.update(table, id, patch);
+    if (!updated) {
+      throw new Error('Registro não encontrado');
+    }
+    await logAction(context.store, {
+      actorUserId: context.actorId,
+      action: `admin.${spec.label}.update`,
+      targetType: spec.label,
+      targetId: id,
+      metadata: patch as Row,
+    });
+    return updated;
+  },
+  'crud.delete': async (context) => {
+    const table = String(context.payload.table ?? '');
+    const id = String(context.payload.id ?? context.payload.user_id ?? '');
+    if (!id) {
+      throw new Error('ID obrigatório');
+    }
+    if (table === 'users') {
+      return deleteUser(context, id);
+    }
+    const spec = CRUD_SPECS[table];
+    if (!spec) {
+      throw new Error(`Tabela não permitida: ${table}`);
+    }
+    await context.store.remove(table, id);
+    await logAction(context.store, {
+      actorUserId: context.actorId,
+      action: `admin.${spec.label}.delete`,
+      targetType: spec.label,
+      targetId: id,
+      metadata: {},
+    });
+    return { id, deleted: true };
   },
   'subscription.manual': async (context) => {
     const days = Number.parseInt(String(context.payload.days ?? '30'), 10);
