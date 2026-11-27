@@ -21,8 +21,8 @@ describe('sincronização do catálogo APIBrasil', () => {
         { search: '22222222-2222-4222-8222-222222222222', service_name: 'cpf', name: 'CPF Básico', value: 9.9, type: 'Api', mode: 'api', categories: [] },
         { search: '33333333-3333-4333-8333-333333333333', service_name: 'cnpj', name: 'Consulta CNPJ', value: 8.5, type: 'Api', mode: 'api', categories: [] },
         { search: '44444444-4444-4444-8444-444444444444', service_name: 'telefone', name: 'Consulta Telefone', value: 6.4, type: 'Api', mode: 'api', categories: [] },
-        { search: '55555555-5555-4555-8555-555555555555', service_name: 'veiculos', name: 'Consulta Placa', value: 15, type: 'Api', mode: 'api', categories: [] },
-        { search: '66666666-6666-4666-8666-666666666666', service_name: 'veiculos-completa', name: 'Consulta Completa', value: 25, type: 'Api', mode: 'api', categories: [] },
+        { search: '55555555-5555-4555-8555-555555555555', service_name: 'veiculos', name: 'Dados técnicos da placa com Renavam e chassi', value: 2.8, type: 'Api', mode: 'api', categories: [] },
+        { search: '66666666-6666-4666-8666-666666666666', service_name: 'veiculos', name: 'Consulta pela placa com alertas de roubo ou furto', value: 43.78, type: 'Api', mode: 'api', categories: [] },
       ],
     };
 
@@ -48,6 +48,12 @@ describe('sincronização do catálogo APIBrasil', () => {
     const cpf = rows.find((row) => row.module_key === 'pf-cpf');
     expect(cpf?.endpoint).toBe('/consulta/cpf/credits');
     expect(cpf?.cost_cents).toBe(1290);
+
+    const basicPlate = rows.find((row) => row.module_key === 'placa-basica');
+    const fullPlate = rows.find((row) => row.module_key === 'placa-completa');
+    expect(basicPlate?.cost_cents).toBe(280);
+    expect(fullPlate?.cost_cents).toBe(4378);
+    expect(fullPlate?.endpoint).toBe('/consulta/veiculos/credits');
 
     const price = await resolvePrice(store, 'PF', 'cpf', 'basic');
     expect(price.source).toBe('catalog');

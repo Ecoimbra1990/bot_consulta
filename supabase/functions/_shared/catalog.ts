@@ -73,24 +73,26 @@ function slugify(value: unknown): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function canonicalModuleKey(value: unknown): string {
-  const slug = slugify(value);
-  if (!slug || slug.length > 80) {
-    return '';
+function canonicalModuleKey(...values: unknown[]): string {
+  const slugs = values.map(slugify).filter((slug) => slug.length > 0 && slug.length <= 200);
+  const joined = slugs.join(' ');
+  for (const slug of slugs) {
+    if (CANONICAL_MODULE_KEYS.has(slug)) {
+      return slug;
+    }
   }
-  if (CANONICAL_MODULE_KEYS.has(slug)) {
-    return slug;
+  if (/veiculo|placa|renavam|chassi/.test(joined)) {
+    return /roubo|furto|sinistro|leilao|recall|alerta|historico|complet|full|panorama/.test(joined)
+      ? 'placa-completa'
+      : 'placa-basica';
   }
-  if (/telefone|phone|celular/.test(slug)) {
+  if (/telefone|phone|celular/.test(joined)) {
     return 'telefone';
   }
-  if (/veiculo|placa|renavam/.test(slug)) {
-    return /complet|full|furto|roubo|renavam|historico/.test(slug) ? 'placa-completa' : 'placa-basica';
-  }
-  if (/cnpj|empresa|pessoa-juridica|(^|-)pj(-|$)/.test(slug)) {
+  if (/cnpj|empresa|pessoa-juridica|(^|-)pj(-|$)/.test(joined)) {
     return 'cnpj';
   }
-  if (/cpf|(^|-)pf(-|$)|pessoa-fisica/.test(slug)) {
+  if (/cpf|(^|-)pf(-|$)|pessoa-fisica/.test(joined)) {
     return 'pf-cpf';
   }
   return '';
@@ -168,9 +170,10 @@ export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
     const rawModuleKey = text(
       candidate.module_key ?? candidate.service_name ?? candidate.key ?? candidate.slug ?? candidate.id ?? candidate.module ?? candidate.nome ?? candidate.name,
     );
+    const description = text(candidate.label ?? candidate.descricao ?? candidate.description ?? candidate.name ?? candidate.nome);
     const foundCost = deepFind(candidate, ['cost_cents', 'price_cents', 'preco_centavos', 'custo_centavos', 'cost', 'custo', 'price', 'preco', 'valor', 'value']);
     const costCents = foundCost ? parseMoney(foundCost.value, foundCost.key) ?? 0 : 0;
-    const mappedKey = canonicalModuleKey(rawModuleKey) || canonicalModuleKey(rawEndpoint);
+    const mappedKey = canonicalModuleKey(rawModuleKey, description, rawEndpoint);
     const moduleKey = mappedKey || rawModuleKey;
     const endpoint = mappedKey ? canonicalEndpoint(mappedKey) || rawEndpoint : rawEndpoint;
     if (!endpoint || !moduleKey || costCents <= 0) {
