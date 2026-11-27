@@ -4,6 +4,11 @@ import type { ProviderResult, Row } from './types.ts';
 
 type Normalizer = (provider: string, raw: Row, key: string) => Row;
 
+export interface ServiceOptions {
+  serviceName?: string;
+  path?: string;
+}
+
 const retryable = new Set([429, 500, 502, 503, 504]);
 
 function unavailable(message: string): ProviderResult {
@@ -208,33 +213,37 @@ export class APIBrasilAdapter {
     }
   }
 
-  async queryPfCpf(cpf: string): Promise<ProviderResult> {
-    return this.query('pf', cpf, config.apiBrasil.pfPath, { tipo: 'cpf-cadastral', cpf }, (provider, raw, key) =>
+  async queryPfCpf(cpf: string, options: ServiceOptions = {}): Promise<ProviderResult> {
+    const serviceName = options.serviceName || 'dados-cadastrais';
+    return this.query('pf', cpf, options.path || config.apiBrasil.pfPath, { tipo: serviceName, cpf }, (provider, raw, key) =>
       normalizePf(provider, raw, key),
     );
   }
 
-  async queryVehiclePlate(plate: string, full = false): Promise<ProviderResult> {
-    const path = full && config.apiBrasil.vehicleFullPath
+  async queryVehiclePlate(plate: string, full = false, options: ServiceOptions = {}): Promise<ProviderResult> {
+    const defaultPath = full && config.apiBrasil.vehicleFullPath
       ? config.apiBrasil.vehicleFullPath
       : config.apiBrasil.vehiclePlatePath;
-    return this.query('vehicle', plate, path, { tipo: 'nacional', placa: plate }, (provider, raw, key) =>
+    const serviceName = options.serviceName || 'roubo-furto-v2';
+    return this.query('vehicle', plate, options.path || defaultPath, { tipo: serviceName, placa: plate }, (provider, raw, key) =>
       normalizeVehicle(provider, raw, 'placa', key),
     );
   }
 
-  async queryVehicleByCpf(cpf: string): Promise<ProviderResult> {
-    return this.query('fleet', cpf, config.apiBrasil.vehicleFleetPath, { tipo: 'frota-pf', cpf }, (provider, raw, key) =>
+  async queryVehicleByCpf(cpf: string, options: ServiceOptions = {}): Promise<ProviderResult> {
+    const serviceName = options.serviceName || 'frota-pf';
+    return this.query('fleet', cpf, options.path || config.apiBrasil.vehicleFleetPath, { tipo: serviceName, cpf }, (provider, raw, key) =>
       normalizeFleet(provider, raw, key),
     );
   }
 
-  async queryPhone(phone: string): Promise<ProviderResult> {
+  async queryPhone(phone: string, options: ServiceOptions = {}): Promise<ProviderResult> {
+    const serviceName = options.serviceName || 'cpf-cnpj-pelo-telefone';
     const result = await this.query(
       'phone',
       phone,
-      config.apiBrasil.phonePath,
-      { tipo: 'cpf-cnpj-pelo-telefone', telefone: phone },
+      options.path || config.apiBrasil.phonePath,
+      { tipo: serviceName, telefone: phone },
       (provider, raw, key) => normalizePhoneResult(provider, raw, key),
     );
     if (!result.ok) {
@@ -262,8 +271,9 @@ export class APIBrasilAdapter {
     return result;
   }
 
-  async queryCompanyCnpj(cnpj: string): Promise<ProviderResult> {
-    return this.query('company', cnpj, config.apiBrasil.companyPath, { tipo: 'cnpj-receita', cnpj }, (provider, raw, key) =>
+  async queryCompanyCnpj(cnpj: string, options: ServiceOptions = {}): Promise<ProviderResult> {
+    const serviceName = options.serviceName || 'cnpj';
+    return this.query('company', cnpj, options.path || config.apiBrasil.companyPath, { tipo: serviceName, cnpj }, (provider, raw, key) =>
       normalizeCompany(provider, raw, key),
     );
   }

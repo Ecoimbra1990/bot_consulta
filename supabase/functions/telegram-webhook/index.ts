@@ -184,6 +184,7 @@ function summary(normalized: Row): string {
       `Situação: ${normalized.situacao_cadastral ?? '-'}`,
       `Nascimento: ${normalized.nascimento ?? '-'}`,
       `Mãe: ${normalized.nome_mae ?? '-'}`,
+      `Parentes: ${Array.isArray(normalized.parentes) ? normalized.parentes.length : 0}`,
     ].join('\n');
   }
   if (entity === 'EMPRESA') {
@@ -238,6 +239,18 @@ function humanize(key: string): string {
     endereco: 'Endereço',
     enderecos: 'Endereços',
     participacao_em_empresas: 'Participação em empresas',
+    nome: 'Nome',
+    vinculo: 'Vínculo',
+    detalhes: 'Detalhes',
+    parentes: 'Parentes',
+    pessoas_contato: 'Pessoas de contato',
+    moradores_mesmo_domicilio: 'Moradores do mesmo domicílio',
+    vinculos_trabalho: 'Vínculos de trabalho',
+    alertas: 'Alertas',
+    consta_ocorrencia: 'Consta ocorrência',
+    consta_ocorrencia_ativa: 'Ocorrência ativa',
+    municipio_emplacamento: 'Município de emplacamento',
+    procedencia: 'Procedência',
     marca_modelo: 'Marca/modelo',
     ano_fabricacao: 'Ano de fabricação',
     ano_modelo: 'Ano/modelo',
@@ -344,11 +357,19 @@ function formatPfDetails(row: Row): string {
     'emails',
     'enderecos',
     'participacao_em_empresas',
+    'parentes',
+    'pessoas_contato',
+    'moradores_mesmo_domicilio',
+    'vinculos_trabalho',
   ]);
 
   pushSection(lines, 'Telefones', row.telefones);
   pushSection(lines, 'E-mails', row.emails);
   pushSection(lines, 'Endereços', row.enderecos);
+  pushSection(lines, 'Parentes', row.parentes);
+  pushSection(lines, 'Pessoas de contato', row.pessoas_contato);
+  pushSection(lines, 'Moradores do mesmo domicílio', row.moradores_mesmo_domicilio);
+  pushSection(lines, 'Vínculos de trabalho', row.vinculos_trabalho);
   pushSection(lines, 'Participação em empresas', row.participacao_em_empresas);
   pushSection(lines, 'Outros atributos', row.atributos, shown);
   return lines.join('\n');
@@ -415,6 +436,8 @@ function formatVehicleDetails(row: Row): string {
     `Situação: ${displayValue(row.situacao)}`,
     `Proprietário: ${displayValue(row.proprietario)}`,
   ];
+  pushSection(lines, 'Alertas', row.alertas, new Set(['historico']));
+  pushSection(lines, 'Histórico de alertas', asRow(row.alertas).historico);
   pushSection(lines, 'Outros dados', row.atributos, new Set([
     'placa',
     'renavam',
@@ -425,6 +448,8 @@ function formatVehicleDetails(row: Row): string {
     'cor',
     'situacao',
     'proprietario',
+    'alertas',
+    'rouboFurto',
   ]));
   return lines.join('\n');
 }

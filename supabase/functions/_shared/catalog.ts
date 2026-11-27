@@ -64,6 +64,39 @@ function text(value: unknown, fallback = ''): string {
 
 const CANONICAL_MODULE_KEYS = new Set(['pf-cpf', 'cnpj', 'telefone', 'placa-basica', 'placa-completa']);
 
+interface BenefitRule {
+  canonicalKey: string;
+  preferred: string[];
+}
+
+const PLATE_PREFERRED_SERVICES = [
+  'roubo-furto-v2',
+  'veicular-360',
+  'alertas-e-historico-veiculo',
+  'consulta-roubo-e-furto',
+];
+
+const BENEFIT_RULES: BenefitRule[] = [
+  { canonicalKey: 'pf-cpf', preferred: ['dados-cadastrais'] },
+  { canonicalKey: 'cnpj', preferred: ['cnpj'] },
+  { canonicalKey: 'telefone', preferred: ['cpf-cnpj-pelo-telefone'] },
+  { canonicalKey: 'placa-basica', preferred: PLATE_PREFERRED_SERVICES },
+  { canonicalKey: 'placa-completa', preferred: PLATE_PREFERRED_SERVICES },
+];
+
+const SERVICE_ENDPOINTS: Record<string, string> = {
+  cnpj: '/dados/cnpj/credits',
+  'cnpj-cadastral': '/dados/cnpj/credits',
+  'receita-federal': config.apiBrasil.pfPath,
+  'dados-cadastrais': config.apiBrasil.pfPath,
+  'dados-cadastrais-basicos': config.apiBrasil.pfPath,
+  'cadastro-pf-basico': config.apiBrasil.pfPath,
+  'cpf-cadastral': config.apiBrasil.pfPath,
+  'cpf-cnpj-pelo-telefone': config.apiBrasil.phonePath,
+  'roubo-furto-v2': config.apiBrasil.vehiclePlatePath,
+  'veicular-360': config.apiBrasil.vehiclePlatePath,
+};
+
 function slugify(value: unknown): string {
   return text(value)
     .normalize('NFD')
@@ -105,6 +138,36 @@ function canonicalEndpoint(moduleKey: string): string {
   if (moduleKey === 'placa-basica') return config.apiBrasil.vehiclePlatePath;
   if (moduleKey === 'placa-completa') return config.apiBrasil.vehicleFullPath || config.apiBrasil.vehiclePlatePath;
   return '';
+}
+
+function serviceNameOf(candidate: Row): string {
+  return text(
+    candidate.service_name
+      ?? candidate.tipo
+      ?? candidate.module_key
+      ?? candidate.key
+      ?? candidate.slug
+      ?? candidate.id,
+  );
+}
+
+function candidateEndpoint(candidate: Row, service: string, moduleKey: string): string {
+  const search = text(candidate.search);
+  const raw = text(
+    candidate.endpoint
+      ?? candidate.path
+      ?? candidate.url
+      ?? candidate.rota
+      ?? candidate.route
+      ?? candidate.api
+      ?? (search.startsWith('/') ? search : ''),
+  );
+  return (raw || SERVICE_ENDPOINTS[service] || canonicalEndpoint(moduleKey)).trim();
+}
+
+function preferenceRank(rule: BenefitRule, service: string): number {
+  const index = rule.preferred.indexOf(service);
+  return index === -1 ? rule.preferred.length : index;
 }
 
 function collectObjects(value: unknown, output: Row[] = [], depth = 0): Row[] {
@@ -158,15 +221,17 @@ export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
   const candidates = collectObjects(payload);
   const alerts: string[] = [];
   const selected = new Map<string, Row>();
+  const selectionMeta = new Map<string, { rank: number; cost: number }>();
   let skipped = 0;
 
   const message = text(payload.message);
-  if (payload.error === true || /plano ativo|sem credito|sem saldo/i.test(message)) {
+  if (payload.error === true || /sem credito|sem saldo|saldo insuficiente/i.test(message)) {
     alerts.push(`APIBrasil: ${message || 'resposta indicando indisponibilidade'}`);
   }
 
   for (const candidate of candidates) {
-    const rawEndpoint = text(candidate.endpoint ?? candidate.path ?? candidate.url ?? candidate.rota ?? candidate.route ?? candidate.api ?? candidate.search);
+    const service = serviceNameOf(candidate);
+    const rawEndpoint = candidateEndpoint(candidate, service, '');
     const rawModuleKey = text(
       candidate.module_key ?? candidate.service_name ?? candidate.key ?? candidate.slug ?? candidate.id ?? candidate.module ?? candidate.nome ?? candidate.name,
     );
@@ -174,26 +239,48 @@ export async function syncApiCatalog(store: Store): Promise<CatalogSyncResult> {
     const foundCost = deepFind(candidate, ['cost_cents', 'price_cents', 'preco_centavos', 'custo_centavos', 'cost', 'custo', 'price', 'preco', 'valor', 'value']);
     const costCents = foundCost ? parseMoney(foundCost.value, foundCost.key) ?? 0 : 0;
     const mappedKey = canonicalModuleKey(rawModuleKey, description, rawEndpoint);
-    const moduleKey = mappedKey || rawModuleKey;
-    const endpoint = mappedKey ? canonicalEndpoint(mappedKey) || rawEndpoint : rawEndpoint;
-    if (!endpoint || !moduleKey || costCents <= 0) {
+    if (!service || costCents <= 0 || (!mappedKey && service !== 'roubo-furto-v2')) {
       skipped += 1;
       continue;
     }
-    const priceCents = Math.ceil((costCents * config.pricingMultiplier) / 10) * 10;
-    if (priceCents <= costCents) {
-      alerts.push(`Módulo ${moduleKey}: preço ${priceCents} não cobre custo ${costCents}`);
-    }
-    const existing = selected.get(moduleKey);
-    if (!existing || costCents > Number(existing.cost_cents ?? 0)) {
+    const canonicalKeys = mappedKey === 'placa-completa'
+      ? ['placa-completa', 'placa-basica']
+      : mappedKey === 'roubo-furto-v2' || service === 'roubo-furto-v2'
+        ? ['placa-completa', 'placa-basica']
+        : mappedKey
+          ? [mappedKey]
+          : ['placa-completa', 'placa-basica'];
+
+    for (const moduleKey of canonicalKeys) {
+      const rule = BENEFIT_RULES.find((item) => item.canonicalKey === moduleKey);
+      if (!rule) {
+        continue;
+      }
+      if (!rule.preferred.includes(service)) {
+        continue;
+      }
+      const rank = preferenceRank(rule, service);
+      const current = selectionMeta.get(moduleKey);
+      if (current && !(costCents < current.cost || (costCents === current.cost && rank < current.rank))) {
+        continue;
+      }
+      const endpoint = candidateEndpoint(candidate, service, moduleKey);
+      if (!endpoint.startsWith('/')) {
+        continue;
+      }
+      const priceCents = Math.ceil((costCents * config.pricingMultiplier) / 10) * 10;
+      if (priceCents <= costCents) {
+        alerts.push(`Módulo ${moduleKey}: preço ${priceCents} não cobre custo ${costCents}`);
+      }
+      selectionMeta.set(moduleKey, { rank, cost: costCents });
       selected.set(moduleKey, {
         module_key: moduleKey,
-        label: text(candidate.label ?? candidate.descricao ?? candidate.description ?? candidate.name ?? candidate.nome ?? candidate.service_name, moduleKey),
+        label: text(candidate.label ?? candidate.descricao ?? candidate.description ?? candidate.name ?? candidate.nome ?? service, moduleKey),
         endpoint,
         cost_cents: costCents,
         balance_cents: null,
         source: 'apibrasil',
-        payload_json: candidate,
+        payload_json: { ...candidate, service_name: service },
         updated_at: new Date().toISOString(),
       });
     }

@@ -20,30 +20,83 @@ function firstDefined(...values: unknown[]): any {
   return null;
 }
 
+function scalar(value: unknown): unknown {
+  const object = asObject(value);
+  return firstDefined(object.descricao, object.description, object.valor, object.value, object.codigo, object.code, value);
+}
+
+function contentOf(value: unknown): any {
+  const object = asObject(value);
+  return firstDefined(object.conteudo, object.content, object);
+}
+
+function itemsOf(value: unknown): unknown[] {
+  return asArray(firstDefined(contentOf(value), value));
+}
+
+function relatedOf(value: unknown): Row[] {
+  return itemsOf(value)
+    .filter((item): item is Row => item !== null && typeof item === 'object' && !Array.isArray(item))
+    .map((item) => ({
+      nome: scalar(firstDefined(item.nome, item.nm_completo, item.nome_completo, item.nomeCompleto)),
+      documento: item.documento ? maskField('documento', item.documento) : null,
+      cpf: item.cpf ? maskValue('cpf', String(item.cpf)) : null,
+      vinculo: scalar(firstDefined(item.vinculo, item.ds_vinculo, item.parentesco, item.tipo, item.relacao)),
+      detalhes: sanitize(item),
+    }));
+}
+
 function payload(raw: Row): Row {
-  const data = asObject(raw?.data && typeof raw.data === 'object' ? raw.data : raw);
-  const nested = data.data;
-  return asObject(nested && typeof nested === 'object' ? nested : data);
+  const data = asObject(firstDefined(raw?.data, raw?.response?.content, raw));
+  const content = asObject(data.content);
+  const nested = firstDefined(
+    content.nome?.conteudo,
+    content.conteudo,
+    content,
+    data.dados,
+    data.results,
+    data.data,
+    data.response?.content,
+  );
+  return asObject(nested ?? data);
+}
+
+function readPhones(...blocks: unknown[]): string[] {
+  const phones = new Set<string>();
+  for (const block of blocks) {
+    const entries = Array.isArray(block)
+      ? block
+      : itemsOf(firstDefined(asObject(block).conteudo, asObject(block).telefones, asObject(block).content));
+    for (const item of entries) {
+      const entry = asObject(item);
+      const number = firstDefined(entry.num_telefone, entry.numero, entry.telefone);
+      if (!number) {
+        continue;
+      }
+      const ddd = String(firstDefined(entry.ddd, entry.uf_ddd, '') || '');
+      const text = String(number);
+      phones.add(ddd && !text.startsWith(ddd) ? `${ddd}${text}` : text);
+    }
+  }
+  return [...phones];
 }
 
 export function normalizePf(provider: string, raw: Row, cpf: string): Row {
   const data = payload(raw);
-  const cadastral = asObject(firstDefined(data.credcadastral, data.cadastro, data));
-  const federal = asObject(firstDefined(cadastral.dados_receita_federal, cadastral.dadosReceitaFederal));
-  const phones: string[] = [];
-  for (const block of [cadastral.telefone_fixo, cadastral.telefone_celular]) {
-    for (const item of asArray(asObject(block).telefones)) {
-      const entry = asObject(item);
-      const number = entry.num_telefone || entry.numero || entry.telefone;
-      if (!number) {
-        continue;
-      }
-      const ddd = String(entry.ddd || '');
-      const text = String(number);
-      phones.push(ddd && !text.startsWith(ddd) ? `${ddd}${text}` : text);
-    }
-  }
-  let emails = asArray(cadastral.emails);
+  const cadastral = asObject(firstDefined(data.credcadastral, data.cadastro, data.dados, data));
+  const identityBlock = contentOf(firstDefined(data.nome, cadastral.nome));
+  const federalCandidate = firstDefined(cadastral.dados_receita_federal, cadastral.dadosReceitaFederal, cadastral.conteudo, data.conteudo);
+  const federal = asObject(federalCandidate ?? identityBlock ?? (cadastral.nome || cadastral.name ? cadastral : null));
+  const identity = asObject(firstDefined(identityBlock, federal));
+  const phones = readPhones(
+    cadastral.telefone_fixo,
+    cadastral.telefone_celular,
+    cadastral.telefones,
+    data.telefones,
+    data.pesquisa_telefones,
+    cadastral.pesquisa_telefones,
+  );
+  let emails = itemsOf(firstDefined(data.emails, cadastral.emails));
   if (emails.length === 0 && federal.email) {
     emails = [federal.email];
   }
@@ -51,60 +104,80 @@ export function normalizePf(provider: string, raw: Row, cpf: string): Row {
     entity: 'PF',
     provider,
     cpf: maskValue('cpf', cpf),
-    nome: firstDefined(federal.nome, cadastral.nome, cadastral.name),
-    situacao_cadastral: firstDefined(
+    nome: scalar(firstDefined(identity.nome, federal.nome, cadastral.nome, cadastral.name)),
+    situacao_cadastral: scalar(firstDefined(
+      identity.situacao_receita,
+      identity.situacao_cadastral,
       federal.situacao_cadastral,
+      federal.situacao_receita,
       federal.situacao,
+      cadastral.situacao_cadastral,
+      cadastral.situacao_receita,
       cadastral.situacaoCadastral,
       cadastral.situacao,
-    ),
-    nascimento: firstDefined(federal.data_nascimento, federal.nascimento, cadastral.dataNascimento),
-    nome_mae: firstDefined(federal.nome_mae, federal.nomeMae, cadastral.nomeMae),
-    sexo: firstDefined(federal.sexo, federal.genero, cadastral.sexo),
+    )),
+    nascimento: firstDefined(identity.data_nascimento, federal.data_nascimento, federal.nascimento, cadastral.data_nascimento, cadastral.dataNascimento),
+    nome_mae: firstDefined(identity.mae, identity.nome_mae, federal.nome_mae, federal.mae, federal.nomeMae, cadastral.nome_mae, cadastral.nomeMae),
+    sexo: scalar(firstDefined(identity.sexo, federal.sexo, federal.genero, cadastral.sexo)),
     telefones: phones.map((phone) => maskValue('telefone', phone)),
-    enderecos: sanitize(firstDefined(cadastral.somente_endereco, cadastral.enderecos, [])),
+    enderecos: sanitize(firstDefined(itemsOf(data.pesquisa_enderecos), cadastral.somente_endereco, cadastral.enderecos, data.enderecos, [])),
     emails: emails.map((email) => String(email)),
-    participacao_em_empresas: sanitize(firstDefined(cadastral.participacao_em_empresas, [])),
+    parentes: relatedOf(firstDefined(data.dados_parentes, cadastral.dados_parentes)),
+    pessoas_contato: relatedOf(firstDefined(data.pessoas_contato, cadastral.pessoas_contato)),
+    moradores_mesmo_domicilio: relatedOf(firstDefined(data.residentes_mesmo_domicilio, cadastral.residentes_mesmo_domicilio)),
+    vinculos_trabalho: relatedOf(firstDefined(data.trabalha_trabalhou, cadastral.trabalha_trabalhou)),
+    participacao_em_empresas: sanitize(firstDefined(itemsOf(data.alerta_participacoes), cadastral.participacao_em_empresas, [])),
     atributos: sanitize(cadastral),
   };
 }
 
 export function normalizeVehicle(provider: string, raw: Row, keyType: string, keyValue: string): Row {
   const data = payload(raw);
-  const candidate = firstDefined(data.dados, data.veiculo);
+  const alertBlock = asObject(data.rouboFurto);
+  const history = asArray(alertBlock.historico);
+  const alertVehicle = asObject(history[0]);
+  const candidate = firstDefined(data.dados, data.veiculo, alertVehicle.placa ? alertVehicle : null, alertBlock);
   const vehicle = candidate && typeof candidate === 'object' ? asObject(candidate) : data;
   const owner = asObject(firstDefined(vehicle.proprietario, data.cliente, data.proprietario));
   let brandModel = firstDefined(
     vehicle.marca_modelo,
     vehicle.marcaModelo,
     vehicle.modelo_marca,
+    alertVehicle.marcaModelo,
     data.marca_modelo,
     data.marcaModelo,
   );
   if (!brandModel) {
-    const brand = firstDefined(vehicle.marca, data.marca);
-    const model = firstDefined(vehicle.modelo, data.modelo);
+    const brand = firstDefined(vehicle.marca, data.marca, alertVehicle.marca);
+    const model = firstDefined(vehicle.modelo, data.modelo, alertVehicle.modelo);
     if (brand || model) {
       brandModel = [brand, model].filter(Boolean).map((part) => String(part)).join('/');
     }
   }
   const renavam = firstDefined(vehicle.renavam, data.renavam);
-  const chassis = firstDefined(vehicle.chassi, data.chassi);
+  const chassis = firstDefined(vehicle.chassi, alertVehicle.chassi, data.chassi);
   return {
     entity: 'VEICULO',
     provider,
     consulta: { tipo: keyType, valor: maskValue(keyType, keyValue) },
-    placa: firstDefined(vehicle.placa, data.placa),
+    placa: firstDefined(vehicle.placa, alertVehicle.placa, data.placa),
     renavam: renavam ? maskValue('renavam', String(renavam)) : null,
     chassi: chassis ? maskValue('chassi', String(chassis)) : null,
     marca_modelo: brandModel,
     ano_fabricacao: firstDefined(vehicle.ano_fabricacao, vehicle.anoFabricacao, data.anoFabricacao),
     ano_modelo: firstDefined(vehicle.ano_modelo, vehicle.anoModelo, data.anoModelo),
-    cor: firstDefined(vehicle.cor, vehicle.corVeiculo, data.cor),
-    situacao: firstDefined(vehicle.situacao, vehicle.status, data.situacao),
+    cor: firstDefined(vehicle.cor, vehicle.corVeiculo, alertVehicle.cor, data.cor),
+    situacao: scalar(firstDefined(vehicle.situacao, vehicle.status, alertBlock.indicadorProcedencia, data.situacao)),
     proprietario: {
       nome: firstDefined(owner.nome, owner.razao_social),
       documento: owner.documento ? maskField('documento', owner.documento) : null,
+    },
+    alertas: {
+      consta_ocorrencia: alertBlock.constaOcorrencia ?? null,
+      consta_ocorrencia_ativa: alertBlock.constaOcorrenciaAtiva ?? null,
+      municipio_emplacamento: alertBlock.municipioEmplacamento ?? null,
+      procedencia: alertBlock.indicadorProcedencia ?? null,
+      historico: sanitize(history),
     },
     atributos: sanitize(data),
   };
@@ -169,19 +242,22 @@ export function normalizePhoneOperator(raw: Row): Row {
 
 export function normalizeCompany(provider: string, raw: Row, cnpj: string): Row {
   const data = payload(raw);
-  const details = asObject(firstDefined(data.dados, data.resultado, data));
+  const details = asObject(firstDefined(data.dados, data.resultado, data.cnpj, data));
   const document = asObject(details.documento);
-  const cnae = asObject(details.atividade_principal);
-  const address = asObject(details.endereco);
+  const company = asObject(firstDefined(details.empresa, data.empresa));
+  const cnae = asObject(firstDefined(details.atividade_principal, asObject(asArray(details.cnae)[0])));
+  const address = asObject(firstDefined(details.endereco, details));
+  const municipality = asObject(address.municipio);
   const status = asObject(details.situacao_cadastral);
-  const cnaeCode = firstDefined(cnae.codigo, details.codigoCnae);
+  const cnaeCode = firstDefined(cnae.codigo, details.codigoCnae, details.cnae_fiscal);
   const cnaeDescription = firstDefined(cnae.descricao, details.descricaoCnae, details.atividadeEconomica);
   const cnaeValue = cnaeCode && cnaeDescription ? `${cnaeCode} - ${cnaeDescription}` : cnaeDescription || cnaeCode;
   const addressValue = [
     address.logradouro,
     address.numero,
+    address.complemento,
     address.bairro,
-    firstDefined(address.municipio, address.cidade),
+    firstDefined(municipality.descricao, address.municipio, address.cidade),
     firstDefined(address.estado, address.uf),
     address.cep,
   ]
@@ -192,9 +268,9 @@ export function normalizeCompany(provider: string, raw: Row, cnpj: string): Row 
     entity: 'EMPRESA',
     provider,
     cnpj: maskValue('cnpj', cnpj),
-    razao_social: firstDefined(details.razao_social, details.razaoSocial, details.nome, document.numero),
+    razao_social: firstDefined(company.razao_social, details.razao_social, details.razaoSocial, details.nome, document.numero),
     nome_fantasia: firstDefined(details.nome_fantasia, details.nomeFantasia),
-    situacao_cadastral: firstDefined(status.descricao, details.situacao, document.status),
+    situacao_cadastral: scalar(firstDefined(details.situacao_cadastral, status.descricao, details.situacao, document.status)),
     cnae: cnaeValue,
     endereco: addressValue || null,
     atributos: sanitize(details),

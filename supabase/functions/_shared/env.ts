@@ -35,7 +35,7 @@ export const config = {
   fernetKey: env('FERNET_KEY', ''),
   consentVersion: env('CONSENT_VERSION', 'v1'),
   adminTelegramId: env('ADMIN_TELEGRAM_ID', ''),
-  pricingMultiplier: Number.parseFloat(env('PRICING_MARGIN_MULTIPLIER', '3')) || 3,
+  pricingMultiplier: Number.parseFloat(env('PRICING_MARGIN_MULTIPLIER', '2')) || 2,
   queriesPerMinute: positiveInt(env('QUERIES_PER_MINUTE', '10'), 10),
   queryCacheTtlSeconds: positiveInt(env('QUERY_CACHE_TTL_SECONDS', '86400'), 86400),
   rawRetentionDays: positiveInt(env('RAW_RETENTION_DAYS', '90'), 90),

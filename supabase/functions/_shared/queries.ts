@@ -4,7 +4,7 @@ import { onlyDigits } from './validators.ts';
 import { maskCnpj, maskCpf, maskPhone, maskPlate } from './masking.ts';
 import { checkRateLimit } from './rate-limit.ts';
 import { APIBrasilAdapter } from './provider.ts';
-import { assertSafeMargin, resolvePrice, type QueryMode } from './pricing.ts';
+import { assertSafeMargin, resolvePrice, type QueryMode, type ResolvedPrice } from './pricing.ts';
 import { getRuntimeSettings } from './settings.ts';
 import type { ProviderResult, Row, Store } from './types.ts';
 import { creditWallet, debitWallet, InsufficientBalanceError } from './wallet.ts';
@@ -83,23 +83,25 @@ async function callProvider(
   keyType: string,
   keyValue: string,
   mode: QueryMode,
+  price: ResolvedPrice,
 ): Promise<ProviderResult> {
+  const options = { serviceName: price.serviceName, path: price.endpoint };
   if (entity === 'PF') {
-    return provider.queryPfCpf(keyValue);
+    return provider.queryPfCpf(keyValue, options);
   }
   if (entity === 'EMPRESA') {
-    return provider.queryCompanyCnpj(keyValue);
+    return provider.queryCompanyCnpj(keyValue, options);
   }
   if (entity === 'TELEFONE') {
-    return provider.queryPhone(keyValue);
+    return provider.queryPhone(keyValue, options);
   }
   if (keyType === 'placa') {
-    return provider.queryVehiclePlate(keyValue, mode === 'full');
+    return provider.queryVehiclePlate(keyValue, mode === 'full', options);
   }
   if (keyType === 'renavam') {
     throw new Error('Consulta por Renavam exige o CPF do proprietário');
   }
-  return provider.queryVehicleByCpf(keyValue);
+  return provider.queryVehicleByCpf(keyValue, options);
 }
 
 export interface RunQueryInput {
@@ -203,7 +205,7 @@ export async function runQuery(store: Store, input: RunQueryInput): Promise<Row>
 
   let result: ProviderResult;
   try {
-    result = await callProvider(input.provider ?? new APIBrasilAdapter(), entity, keyType, keyValue, mode);
+    result = await callProvider(input.provider ?? new APIBrasilAdapter(), entity, keyType, keyValue, mode, price);
   } catch (error) {
     return refund(error instanceof Error ? error.message : 'Falha de comunicação com a APIBrasil');
   }

@@ -1,5 +1,5 @@
 import { config } from './env.ts';
-import type { Store } from './types.ts';
+import type { Row, Store } from './types.ts';
 
 function configuredPrice(name: string, fallback: number): number {
   const parsed = Number.parseInt(envPrice(name, fallback), 10);
@@ -48,9 +48,18 @@ const MODULE_KEYS: Record<string, string> = {
   'VEICULO_FROTA:cpf:basic': 'placa-completa',
 };
 
+const DEFAULT_SERVICE_NAMES: Record<string, string> = {
+  'pf-cpf': 'dados-cadastrais',
+  cnpj: 'cnpj',
+  telefone: 'cpf-cnpj-pelo-telefone',
+  'placa-basica': 'roubo-furto-v2',
+  'placa-completa': 'roubo-furto-v2',
+};
+
 export interface ResolvedPrice {
   moduleKey: string;
   endpoint: string;
+  serviceName: string;
   costCents: number;
   priceCents: number;
   source: 'catalog' | 'fallback';
@@ -83,6 +92,14 @@ function normalizeEndpoint(value: unknown): string {
   }
 }
 
+function rowServiceName(row: Row | undefined, moduleKey: string): string {
+  const payload = row?.payload_json !== null && typeof row?.payload_json === 'object'
+    ? row?.payload_json as Row
+    : {};
+  const service = String(row?.service_name ?? payload.service_name ?? payload.tipo ?? '').trim();
+  return service || DEFAULT_SERVICE_NAMES[moduleKey] || '';
+}
+
 export function fallbackPriceFor(entity: string, keyType: string, mode: QueryMode = 'basic'): number {
   return FALLBACK_PRICES[`${entity}:${keyType}:${mode}`] ?? FALLBACK_PRICES[`${entity}:${keyType}:basic`] ?? 60;
 }
@@ -97,25 +114,33 @@ export async function resolvePrice(
   const endpoint = endpointFor(entity, keyType, mode);
   const rows = await store.select('api_modules', { limit: 500 });
   const wantedEndpoint = normalizeEndpoint(endpoint);
-  const row = rows.find((item) =>
-    (normalizeEndpoint(item.endpoint) === wantedEndpoint && wantedEndpoint !== '')
-    || String(item.module_key ?? '') === moduleKey
-  );
+  const row = rows.find((item) => String(item.module_key ?? '') === moduleKey)
+    ?? rows.find((item) => normalizeEndpoint(item.endpoint) === wantedEndpoint && wantedEndpoint !== '');
   const costCents = Math.max(0, Number.parseInt(String(row?.cost_cents ?? 0), 10) || 0);
   const fallback = fallbackPriceFor(entity, keyType, mode);
+  const selectedEndpoint = normalizeEndpoint(row?.endpoint) || endpoint;
+  const serviceName = rowServiceName(row, moduleKey);
 
   if (costCents > 0) {
     const withMargin = Math.ceil((costCents * config.pricingMultiplier) / 10) * 10;
     return {
       moduleKey,
-      endpoint,
+      endpoint: selectedEndpoint,
+      serviceName,
       costCents,
       priceCents: Math.max(10, withMargin),
       source: 'catalog',
     };
   }
 
-  return { moduleKey, endpoint, costCents: 0, priceCents: fallback, source: 'fallback' };
+  return {
+    moduleKey,
+    endpoint: selectedEndpoint,
+    serviceName,
+    costCents: 0,
+    priceCents: fallback,
+    source: 'fallback',
+  };
 }
 
 export function assertSafeMargin(price: ResolvedPrice): void {

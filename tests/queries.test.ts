@@ -58,6 +58,32 @@ describe('execução de consultas', () => {
     expect(await store.count('query_results')).toBe(2);
   });
 
+  it('envia service_name e endpoint do catálogo ao provedor', async () => {
+    const store = new MemoryStore();
+    await seedUser(store, 'u1');
+    await store.insert('api_modules', {
+      module_key: 'pf-cpf',
+      endpoint: '/consulta/cpf/credits',
+      cost_cents: 34,
+      service_name: 'dados-cadastrais',
+      payload_json: { service_name: 'dados-cadastrais' },
+    });
+    const provider = fakeProvider();
+    const result = await runQuery(store, {
+      userId: 'u1',
+      entity: 'PF',
+      keyType: 'cpf',
+      keyValue: '52998224725',
+      provider,
+    });
+    expect(result.status).toBe('completed');
+    expect(provider.queryPfCpf).toHaveBeenCalledWith('52998224725', {
+      serviceName: 'dados-cadastrais',
+      path: '/consulta/cpf/credits',
+    });
+    expect(result.charged_cents).toBe(70);
+  });
+
   it('estorna o valor quando o provedor falha', async () => {
     const store = new MemoryStore();
     await seedUser(store, 'u1');
