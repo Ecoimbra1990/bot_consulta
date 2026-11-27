@@ -1,0 +1,11 @@
+{
+  "imports": {
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.58.0",
+    "grammy": "npm:grammy@^1.38.0"
+  },
+  "compilerOptions": {
+    "lib": ["deno.ns", "dom", "esnext"],
+    "strict": true,
+    "skipLibCheck": true
+  }
+}
