@@ -4,7 +4,9 @@ import { logAction } from '../_shared/audit.ts';
 import { resolveDeletion } from '../_shared/dsr.ts';
 import { updateRuntimeSettings } from '../_shared/settings.ts';
 import { createStore } from '../_shared/store.ts';
+import { linkTelegramAccount } from '../_shared/telegram-users.ts';
 import type { Row, Store } from '../_shared/types.ts';
+import { creditWallet, debitWallet } from '../_shared/wallet.ts';
 
 interface AdminContext {
   store: Store;
@@ -89,19 +91,22 @@ interface CrudSpec {
 }
 
 const CRUD_SPECS: Record<string, CrudSpec> = {
-  users: { columns: ['name', 'telegram_id', 'email', 'role', 'status'], label: 'user' },
-  plans: { columns: ['name', 'price_cents', 'period_days', 'active', 'queries_per_day'], label: 'plan' },
+  users: { columns: ['name', 'telegram_id', 'email', 'role', 'status', 'wallet_balance_cents'], label: 'user' },
+  plans: { columns: ['name', 'price_cents', 'credit_cents', 'period_days', 'active', 'queries_per_day', 'kind'], label: 'plan' },
   subscriptions: { columns: ['user_id', 'plan_id', 'status', 'starts_at', 'ends_at', 'external_ref', 'payment_id'], label: 'subscription' },
-  payments: { columns: ['user_id', 'plan_id', 'subscription_id', 'amount_cents', 'status', 'external_id', 'external_reference', 'checkout_url', 'error'], label: 'payment' },
-  queries: { columns: ['entity', 'key_type', 'key_masked', 'status', 'cost_cents', 'error'], label: 'query' },
+  payments: { columns: ['user_id', 'plan_id', 'subscription_id', 'amount_cents', 'credit_cents', 'kind', 'telegram_chat_id', 'status', 'external_id', 'external_reference', 'checkout_url', 'error'], label: 'payment' },
+  queries: { columns: ['entity', 'key_type', 'key_masked', 'status', 'cost_cents', 'charged_cents', 'module_key', 'error'], label: 'query' },
+  api_modules: { columns: ['module_key', 'label', 'endpoint', 'cost_cents', 'balance_cents'], label: 'api_module' },
+  user_telegram_accounts: { columns: ['telegram_id', 'user_id', 'username'], label: 'telegram_link' },
   dsr_requests: { columns: ['status'], label: 'dsr_request' },
 };
 
-const NUMERIC_COLUMNS = new Set(['telegram_id', 'price_cents', 'period_days', 'queries_per_day', 'amount_cents', 'cost_cents']);
-const REQUIRED_NON_NULL = new Set(['price_cents', 'period_days', 'amount_cents', 'cost_cents']);
+const NUMERIC_COLUMNS = new Set(['telegram_id', 'telegram_chat_id', 'price_cents', 'credit_cents', 'period_days', 'queries_per_day', 'amount_cents', 'cost_cents', 'charged_cents', 'wallet_balance_cents']);
+const REQUIRED_NON_NULL = new Set(['price_cents', 'amount_cents', 'cost_cents']);
 const TIMESTAMP_COLUMNS = new Set(['starts_at', 'ends_at']);
 const ENUM_VALUES: Record<string, string[]> = {
   role: ['admin', 'user'],
+  kind: ['package', 'legacy', 'pix', 'credit', 'bonus', 'manual'],
   entity: ['PF', 'EMPRESA', 'TELEFONE', 'VEICULO', 'VEICULO_FROTA'],
 };
 
@@ -124,7 +129,7 @@ function normalizeCrudPatch(table: string, payload: Row): Row {
       continue;
     }
     let value = payload[column];
-    if (NUMERIC_COLUMNS.has(column)) {
+    if (NUMERIC_COLUMNS.has(column) && !(table === 'user_telegram_accounts' && column === 'telegram_id')) {
       if (value === '' || value === null || value === undefined) {
         if (REQUIRED_NON_NULL.has(column)) {
           throw new Error(`${column} é obrigatório`);
@@ -136,7 +141,7 @@ function normalizeCrudPatch(table: string, payload: Row): Row {
       if (!Number.isFinite(value)) {
         throw new Error(`${column} inválido`);
       }
-      if ((column === 'price_cents' || column === 'period_days' || column === 'telegram_id') && value <= 0) {
+      if ((column === 'price_cents' || column === 'telegram_id') && value <= 0) {
         throw new Error(`${column} inválido`);
       }
     } else if (column === 'active') {
@@ -354,19 +359,58 @@ const handlers: Record<string, Handler> = {
     });
     return subscription;
   },
+  'wallet.adjust': async (context) => {
+    const userId = String(context.payload.user_id ?? context.payload.userId ?? '');
+    const amountCents = Number.parseInt(String(context.payload.amount_cents ?? context.payload.amountCents ?? '0'), 10);
+    const description = String(context.payload.description ?? 'Ajuste manual do administrador');
+    if (!userId || !Number.isFinite(amountCents) || amountCents === 0) {
+      throw new Error('Usuário e valor são obrigatórios');
+    }
+    const reference = `admin:${context.actorId}:${crypto.randomUUID()}`;
+    const balance = amountCents > 0
+      ? await creditWallet(context.store, { userId, amountCents, reference, description }, 'manual')
+      : await debitWallet(context.store, { userId, amountCents: Math.abs(amountCents), reference, description });
+    await logAction(context.store, {
+      actorUserId: context.actorId,
+      action: 'wallet.manual.adjust',
+      targetType: 'user',
+      targetId: userId,
+      metadata: { amount_cents: amountCents, balance_cents: balance },
+    });
+    return { user_id: userId, balance_cents: balance };
+  },
+  'telegram.link': async (context) => {
+    const userId = String(context.payload.user_id ?? context.payload.userId ?? '');
+    const telegramId = String(context.payload.telegram_id ?? context.payload.telegramId ?? '').trim();
+    if (!userId || !telegramId || !/^\d+$/.test(telegramId)) {
+      throw new Error('Usuário e Telegram ID são obrigatórios');
+    }
+    await linkTelegramAccount(context.store, telegramId, userId, context.payload.username ?? null);
+    await logAction(context.store, {
+      actorUserId: context.actorId,
+      action: 'telegram.link',
+      targetType: 'user',
+      targetId: userId,
+      metadata: { telegram_id: telegramId },
+    });
+    return { user_id: userId, telegram_id: telegramId };
+  },
   'plan.create': async (context) => {
     const name = String(context.payload.name ?? '').trim();
     const priceCents = Number.parseInt(String(context.payload.price_cents ?? context.payload.priceCents ?? '0'), 10);
-    const periodDays = Number.parseInt(String(context.payload.period_days ?? context.payload.periodDays ?? '30'), 10);
-    if (!name || !Number.isFinite(priceCents) || priceCents <= 0 || !Number.isFinite(periodDays) || periodDays <= 0) {
-      throw new Error('Plano inválido');
+    const creditCents = Number.parseInt(String(context.payload.credit_cents ?? context.payload.creditCents ?? String(priceCents)), 10);
+    const periodDays = Number.parseInt(String(context.payload.period_days ?? context.payload.periodDays ?? '0'), 10);
+    if (!name || !Number.isFinite(priceCents) || priceCents <= 0 || !Number.isFinite(creditCents) || creditCents <= 0) {
+      throw new Error('Pacote inválido');
     }
     const plan = await context.store.insert('plans', {
       name,
       price_cents: priceCents,
-      period_days: periodDays,
+      credit_cents: creditCents,
+      period_days: Number.isFinite(periodDays) && periodDays > 0 ? periodDays : 0,
       active: context.payload.active !== false && context.payload.active !== 'false',
-      queries_per_day: 100,
+      kind: 'package',
+      queries_per_day: null,
       created_at: new Date().toISOString(),
     });
     await logAction(context.store, {

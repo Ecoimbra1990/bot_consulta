@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { APIBrasilAdapter } from '../supabase/functions/_shared/provider.ts';
 import { runQuery } from '../supabase/functions/_shared/queries.ts';
+import { InsufficientBalanceError } from '../supabase/functions/_shared/wallet.ts';
 import { MemoryStore } from './helpers/memory-store.ts';
 
 function fakeProvider(): APIBrasilAdapter {
@@ -21,27 +22,45 @@ function fakeProvider(): APIBrasilAdapter {
   } as unknown as APIBrasilAdapter;
 }
 
+async function seedUser(store: MemoryStore, id: string, walletBalanceCents = 100_000): Promise<void> {
+  await store.insert('users', { id, wallet_balance_cents: walletBalanceCents, status: 'active' });
+}
+
+async function balance(store: MemoryStore, id: string): Promise<number> {
+  const user = await store.selectById('users', id);
+  return Number(user?.wallet_balance_cents ?? 0);
+}
+
 describe('execução de consultas', () => {
   it('valida CPF antes de chamar o provedor', async () => {
+    const store = new MemoryStore();
+    await seedUser(store, 'u1');
     const provider = fakeProvider();
-    await expect(runQuery(new MemoryStore(), { userId: 'u1', entity: 'PF', keyType: 'cpf', keyValue: '11111111111', provider })).rejects.toThrow('CPF inválido');
+    await expect(runQuery(store, { userId: 'u1', entity: 'PF', keyType: 'cpf', keyValue: '11111111111', provider })).rejects.toThrow('CPF inválido');
     expect(provider.queryPfCpf).not.toHaveBeenCalled();
   });
 
-  it('reaproveita cache não-mock na segunda consulta', async () => {
+  it('débita a consulta e reaproveita cache sem nova cobrança', async () => {
     const store = new MemoryStore();
+    await seedUser(store, 'u1');
     const provider = fakeProvider();
     const input = { userId: 'u1', entity: 'PF', keyType: 'cpf', keyValue: '52998224725', provider };
     const first = await runQuery(store, input);
     expect(first.status).toBe('completed');
     expect(first.provider).toBe('mock');
+    expect(first.charged_cents).toBe(60);
+    expect(await balance(store, 'u1')).toBe(99_940);
     const second = await runQuery(store, input);
     expect(second.provider).toBe('cache');
+    expect(second.charged_cents).toBe(0);
     expect(provider.queryPfCpf).toHaveBeenCalledTimes(1);
+    expect(await balance(store, 'u1')).toBe(99_940);
     expect(await store.count('query_results')).toBe(2);
   });
 
-  it('registra falha do provedor sem quebrar', async () => {
+  it('estorna o valor quando o provedor falha', async () => {
+    const store = new MemoryStore();
+    await seedUser(store, 'u1');
     const provider = fakeProvider();
     vi.mocked(provider.queryPfCpf).mockResolvedValueOnce({
       provider: 'apibrasil',
@@ -51,8 +70,24 @@ describe('execução de consultas', () => {
       error: 'Saldo insuficiente',
       cost_cents: 0,
     });
-    const result = await runQuery(new MemoryStore(), { userId: 'u1', entity: 'PF', keyType: 'cpf', keyValue: '52998224725', provider });
+    const result = await runQuery(store, { userId: 'u1', entity: 'PF', keyType: 'cpf', keyValue: '52998224725', provider });
     expect(result.status).toBe('failed');
     expect(result.error).toBe('Saldo insuficiente');
+    expect(result.charged_cents).toBe(0);
+    expect(await balance(store, 'u1')).toBe(100_000);
+    const movements = await store.select('wallet_transactions', { eq: { user_id: 'u1' } });
+    expect(movements.map((item) => item.kind)).toEqual(['debit', 'refund']);
+  });
+
+  it('bloqueia consulta com saldo insuficiente', async () => {
+    const store = new MemoryStore();
+    await seedUser(store, 'u1', 10);
+    await expect(runQuery(store, {
+      userId: 'u1',
+      entity: 'PF',
+      keyType: 'cpf',
+      keyValue: '52998224725',
+      provider: fakeProvider(),
+    })).rejects.toBeInstanceOf(InsufficientBalanceError);
   });
 });

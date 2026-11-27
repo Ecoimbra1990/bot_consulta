@@ -1,7 +1,9 @@
+import { sendTelegramMessageSafely } from './alerts.ts';
 import { logAction } from './audit.ts';
 import { config } from './env.ts';
-import { createPreference } from './mercadopago.ts';
+import { createPixPayment, createPreference } from './mercadopago.ts';
 import type { Row, Store } from './types.ts';
+import { creditWallet } from './wallet.ts';
 
 export function mapPaymentStatus(status: string): string {
   if (status === 'approved') {
@@ -97,6 +99,71 @@ export async function createCheckout(store: Store, input: { userId: string; plan
   }
 }
 
+export async function createPixTopup(
+  store: Store,
+  input: { userId: string; planId: string; chatId?: string | number | null; email?: string | null },
+): Promise<Row> {
+  const plan = await store.selectById('plans', input.planId);
+  if (!plan || plan.active === false || String(plan.kind ?? 'package') === 'legacy') {
+    throw new Error('Pacote não encontrado ou inativo');
+  }
+  const amountCents = Number.parseInt(String(plan.price_cents ?? 0), 10);
+  const creditCents = Number.parseInt(String(plan.credit_cents ?? plan.price_cents ?? 0), 10);
+  if (!Number.isFinite(amountCents) || amountCents <= 0 || !Number.isFinite(creditCents) || creditCents <= 0) {
+    throw new Error('Pacote sem valor configurado');
+  }
+  const externalReference = `pix-${crypto.randomUUID().replace(/-/g, '')}`;
+  const now = new Date().toISOString();
+  await store.insert('payments', {
+    user_id: input.userId,
+    plan_id: plan.id,
+    provider: 'mercadopago',
+    kind: 'pix',
+    amount_cents: amountCents,
+    credit_cents: creditCents,
+    status: 'pending',
+    external_id: externalReference,
+    external_reference: externalReference,
+    telegram_chat_id: input.chatId ?? null,
+    created_at: now,
+    expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+  });
+  try {
+    const payment = await createPixPayment({
+      externalReference,
+      title: `Créditos ${plan.name || 'Básico'}`,
+      amountCents,
+      email: input.email,
+      chatId: input.chatId,
+    });
+    const transactionData = payment?.point_of_interaction?.transaction_data ?? {};
+    await store.update('payments', externalReference, {
+      mercadopago_payment_id: payment.id ? String(payment.id) : null,
+      qr_code: transactionData.qr_code ?? null,
+      qr_code_base64: transactionData.qr_code_base64 ?? null,
+      checkout_url: transactionData.ticket_url ?? null,
+      status: mapPaymentStatus(String(payment.status ?? 'pending')),
+      updated_at: new Date().toISOString(),
+    }, 'external_reference');
+    return {
+      external_reference: externalReference,
+      payment_id: payment.id ? String(payment.id) : null,
+      amount_cents: amountCents,
+      credit_cents: creditCents,
+      qr_code: transactionData.qr_code ?? null,
+      qr_code_base64: transactionData.qr_code_base64 ?? null,
+      checkout_url: transactionData.ticket_url ?? null,
+    };
+  } catch (error) {
+    await store.update('payments', externalReference, {
+      status: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+      updated_at: new Date().toISOString(),
+    }, 'external_reference');
+    throw new Error('Não foi possível gerar o PIX');
+  }
+}
+
 async function activateSubscription(
   store: Store,
   input: { externalReference: string; userId: string; planId: string | null },
@@ -129,6 +196,10 @@ export async function processMercadoPagoPayment(store: Store, payment: Row): Pro
     ? await store.selectOne('payments', { eq: { external_reference: externalReference } })
     : null;
   const mappedStatus = mapPaymentStatus(String(payment?.status ?? 'pending'));
+  const plan = checkout?.plan_id ? await store.selectById('plans', String(checkout.plan_id)) : null;
+  const isPixCredit = String(checkout?.kind ?? '') === 'pix'
+    || Number.parseInt(String(checkout?.credit_cents ?? 0), 10) > 0
+    || String(plan?.kind ?? '') === 'package';
   const existing = paymentId
     ? await store.selectOne('payments', { eq: { mercadopago_payment_id: paymentId } })
     : null;
@@ -152,8 +223,30 @@ export async function processMercadoPagoPayment(store: Store, payment: Row): Pro
     ? (await store.update('payments', existing.id, payload)) ?? existing
     : await store.insert('payments', { ...payload, created_at: new Date().toISOString() });
 
-  if (checkout?.user_id && !alreadyProcessed) {
-    if (mappedStatus === 'paid') {
+  if (checkout?.user_id) {
+    if (mappedStatus === 'paid' && isPixCredit) {
+      const creditCents = Number.parseInt(String(checkout.credit_cents ?? plan?.credit_cents ?? 0), 10)
+        || Math.round(Number(payment?.transaction_amount ?? 0) * 100);
+      const balance = await creditWallet(store, {
+        userId: String(checkout.user_id),
+        amountCents: creditCents,
+        reference: `payment:${paymentId || externalReference}`,
+        description: `Créditos ${plan?.name ?? 'PIX'}`,
+        metadata: { payment_id: paymentId, external_reference: externalReference },
+      }, 'credit');
+      await store.update('users', String(checkout.user_id), { status: 'active' });
+      if (checkout.telegram_chat_id) {
+        const reais = (cents: number) => `R$ ${(cents / 100).toFixed(2).replace('.', ',')}`;
+        await sendTelegramMessageSafely(String(checkout.telegram_chat_id), `PIX confirmado! ${reais(creditCents)} creditados. Saldo atual: ${reais(balance)}.`);
+      }
+      await logAction(store, {
+        actorUserId: checkout.user_id,
+        action: 'payment.wallet.credited',
+        targetType: 'payment',
+        targetId: String(saved.id),
+        metadata: { credit_cents: creditCents, balance_cents: balance },
+      });
+    } else if (mappedStatus === 'paid' && !alreadyProcessed) {
       await activateSubscription(store, {
         externalReference,
         userId: String(checkout.user_id),
@@ -203,16 +296,23 @@ export async function bootstrap(store: Store): Promise<void> {
       await store.update('users', admin.id, { role: 'admin', status: 'active' });
     }
   }
-  const plans = await store.select('plans', { eq: { name: 'Mensal' }, limit: 1 });
-  if (plans.length === 0) {
-    await store.insert('plans', {
-      name: 'Mensal',
-      price_cents: 4990,
-      period_days: 30,
-      active: true,
-      queries_per_day: 100,
-      created_at: new Date().toISOString(),
-    });
+  const packages = [
+    { name: 'Básico', price_cents: 1500, credit_cents: 1500 },
+    { name: 'Operacional', price_cents: 3000, credit_cents: 3500 },
+    { name: 'Profissional', price_cents: 5000, credit_cents: 6500 },
+  ];
+  for (const item of packages) {
+    const existing = await store.select('plans', { eq: { name: item.name }, limit: 1 });
+    if (existing.length === 0) {
+      await store.insert('plans', {
+        ...item,
+        period_days: 0,
+        active: true,
+        kind: 'package',
+        queries_per_day: null,
+        created_at: new Date().toISOString(),
+      });
+    }
   }
 }
 

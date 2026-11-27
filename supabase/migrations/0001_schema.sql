@@ -134,7 +134,7 @@ create table public.rate_limits (
 
 create table public.app_settings (
   id text primary key default 'main',
-  query_cache_ttl_seconds integer default 300,
+  query_cache_ttl_seconds integer default 86400,
   raw_retention_days integer default 90,
   queries_per_minute integer default 10,
   consent_version text default 'v1',

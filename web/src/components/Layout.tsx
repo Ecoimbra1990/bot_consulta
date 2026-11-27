@@ -4,7 +4,8 @@ import { useAdmin } from '../lib/admin-context';
 const links = [
   { to: '/admin', label: 'Dashboard' },
   { to: '/admin/users', label: 'Usuários' },
-  { to: '/admin/subscriptions', label: 'Assinaturas' },
+  { to: '/admin/catalog', label: 'Catálogo e carteira' },
+  { to: '/admin/subscriptions', label: 'Pacotes' },
   { to: '/admin/payments', label: 'Pagamentos' },
   { to: '/admin/queries', label: 'Consultas' },
   { to: '/admin/dsr', label: 'DSR' },

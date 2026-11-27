@@ -214,8 +214,11 @@ export class APIBrasilAdapter {
     );
   }
 
-  async queryVehiclePlate(plate: string): Promise<ProviderResult> {
-    return this.query('vehicle', plate, config.apiBrasil.vehiclePlatePath, { tipo: 'nacional', placa: plate }, (provider, raw, key) =>
+  async queryVehiclePlate(plate: string, full = false): Promise<ProviderResult> {
+    const path = full && config.apiBrasil.vehicleFullPath
+      ? config.apiBrasil.vehicleFullPath
+      : config.apiBrasil.vehiclePlatePath;
+    return this.query('vehicle', plate, path, { tipo: 'nacional', placa: plate }, (provider, raw, key) =>
       normalizeVehicle(provider, raw, 'placa', key),
     );
   }

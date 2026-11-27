@@ -4,9 +4,9 @@ import { RowActions } from '../components/RowActions';
 import { Table, type TableColumn } from '../components/Table';
 import { getErrorMessage, invokeAdmin } from '../lib/api';
 import { formNumber, formText, toFormText, type CrudValue, type CrudValues } from '../lib/crud';
-import { formatDateTime } from '../lib/format';
+import { formatCurrency, formatDateTime } from '../lib/format';
 import { supabase } from '../lib/supabase';
-import type { User } from '../types';
+import type { TelegramLink, User } from '../types';
 
 const PAGE_SIZE = 50;
 
@@ -35,6 +35,7 @@ const userFields: CrudField[] = [
   { name: 'name', label: 'Nome' },
   { name: 'telegram_id', label: 'Telegram ID', type: 'number' },
   { name: 'email', label: 'E-mail' },
+  { name: 'wallet_balance_cents', label: 'Saldo (centavos)', type: 'number' },
   {
     name: 'role',
     label: 'Perfil',
@@ -58,6 +59,7 @@ const userFields: CrudField[] = [
 
 export function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
+  const [links, setLinks] = useState<TelegramLink[]>([]);
   const [count, setCount] = useState(0);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -75,17 +77,22 @@ export function UsersPage() {
     setLoadError(null);
 
     const from = page * PAGE_SIZE;
-    const { data, count: total, error } = await supabase
-      .from('users')
-      .select('*', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(from, from + PAGE_SIZE - 1);
+    const [usersResult, linksResult] = await Promise.all([
+      supabase
+        .from('users')
+        .select('*', { count: 'exact' })
+        .order('created_at', { ascending: false })
+        .range(from, from + PAGE_SIZE - 1),
+      supabase.from('user_telegram_accounts').select('*').limit(500),
+    ]);
 
-    if (error) {
-      setLoadError(getErrorMessage(error));
+    const failed = usersResult.error ?? linksResult.error;
+    if (failed) {
+      setLoadError(getErrorMessage(failed));
     } else {
-      setUsers((data ?? []) as User[]);
-      setCount(total ?? 0);
+      setUsers((usersResult.data ?? []) as User[]);
+      setLinks((linksResult.data ?? []) as TelegramLink[]);
+      setCount(usersResult.count ?? 0);
     }
 
     setLoading(false);
@@ -147,6 +154,43 @@ export function UsersPage() {
     }
   }
 
+  async function handleAdjust(user: User) {
+    const raw = window.prompt('Valor em centavos (use negativo para debitar):');
+    if (raw === null) {
+      return;
+    }
+    const amount = Number(raw);
+    if (!Number.isFinite(amount) || amount === 0) {
+      setActionError('Valor inválido');
+      return;
+    }
+    setActionError(null);
+    try {
+      await invokeAdmin('wallet.adjust', {
+        user_id: user.id,
+        amount_cents: Math.round(amount),
+        description: 'Ajuste via painel administrativo',
+      });
+      await load();
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    }
+  }
+
+  async function handleLink(user: User) {
+    const telegramId = window.prompt('Telegram ID a vincular a esta carteira:');
+    if (telegramId === null) {
+      return;
+    }
+    setActionError(null);
+    try {
+      await invokeAdmin('telegram.link', { user_id: user.id, telegram_id: telegramId.trim() });
+      await load();
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    }
+  }
+
   function startEdit(user: User) {
     setActionError(null);
     setEditing({
@@ -154,6 +198,7 @@ export function UsersPage() {
       name: toFormText(user.name),
       telegram_id: toFormText(user.telegram_id),
       email: toFormText(user.email),
+      wallet_balance_cents: toFormText(user.wallet_balance_cents),
       role: user.role,
       status: user.status,
     });
@@ -179,6 +224,7 @@ export function UsersPage() {
           name: formText(editing, 'name'),
           telegram_id: formNumber(editing, 'telegram_id'),
           email: formText(editing, 'email').toLowerCase(),
+          wallet_balance_cents: formNumber(editing, 'wallet_balance_cents'),
           role: formText(editing, 'role'),
           status: formText(editing, 'status'),
         },
@@ -220,6 +266,8 @@ export function UsersPage() {
       ),
     },
     { header: 'Telegram', render: (user) => user.telegram_id ?? '-' },
+    { header: 'Vinculados', render: (user) => links.filter((link) => link.user_id === user.id).length },
+    { header: 'Saldo', render: (user) => formatCurrency(user.wallet_balance_cents ?? 0) },
     {
       header: 'Perfil',
       render: (user) => (
@@ -251,11 +299,29 @@ export function UsersPage() {
     {
       header: 'Ações',
       render: (user) => (
-        <RowActions
-          disabled={savingId === user.id || deletingId === user.id}
-          onEdit={() => startEdit(user)}
-          onDelete={() => void handleDelete(user)}
-        />
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={savingId === user.id}
+            onClick={() => void handleAdjust(user)}
+            className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+          >
+            Ajustar saldo
+          </button>
+          <button
+            type="button"
+            disabled={savingId === user.id}
+            onClick={() => void handleLink(user)}
+            className="rounded-md bg-sky-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-600 disabled:opacity-50"
+          >
+            Vincular TG
+          </button>
+          <RowActions
+            disabled={savingId === user.id || deletingId === user.id}
+            onEdit={() => startEdit(user)}
+            onDelete={() => void handleDelete(user)}
+          />
+        </div>
       ),
     },
   ];

@@ -96,29 +96,61 @@ export class MemoryStore implements Store {
   }
 
   async rpc(name: string, args: Row): Promise<any> {
-    if (name !== 'rate_limit_check') {
-      throw new Error(`RPC desconhecida: ${name}`);
+    if (name === 'rate_limit_check') {
+      const now = Date.now();
+      const id = `${args.p_scope}:${args.p_identity}:${new Date(now).toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
+      const rows = this.table('rate_limits');
+      const existing = rows.get(id);
+      if (existing && existing.expires_at && new Date(existing.expires_at).getTime() < now) {
+        rows.delete(id);
+      }
+      const current = rows.get(id);
+      const count = Number(current?.count ?? 0);
+      if (count >= Number(args.p_limit)) {
+        return false;
+      }
+      rows.set(id, {
+        id,
+        scope: args.p_scope,
+        identity: args.p_identity,
+        count: count + 1,
+        expires_at: new Date(now + 120_000).toISOString(),
+      });
+      return true;
     }
-    const now = Date.now();
-    const id = `${args.p_scope}:${args.p_identity}:${new Date(now).toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
-    const rows = this.table('rate_limits');
-    const existing = rows.get(id);
-    if (existing && existing.expires_at && new Date(existing.expires_at).getTime() < now) {
-      rows.delete(id);
+
+    if (name === 'wallet_credit' || name === 'wallet_debit') {
+      const userId = String(args.p_user_id);
+      const amount = Math.round(Number(args.p_amount_cents));
+      const reference = String(args.p_reference);
+      const user = await this.selectById('users', userId);
+      if (!user) {
+        throw new Error('usuário não encontrado');
+      }
+      const existing = await this.selectOne('wallet_transactions', { eq: { reference } });
+      if (existing) {
+        return Number(user.wallet_balance_cents ?? 0);
+      }
+      const current = Number(user.wallet_balance_cents ?? 0);
+      if (name === 'wallet_debit' && current < amount) {
+        throw new Error('saldo insuficiente');
+      }
+      const balance = name === 'wallet_credit' ? current + amount : current - amount;
+      await this.update('users', userId, { wallet_balance_cents: balance });
+      await this.insert('wallet_transactions', {
+        user_id: userId,
+        kind: name === 'wallet_credit' ? (args.p_kind ?? 'credit') : 'debit',
+        amount_cents: name === 'wallet_credit' ? amount : -amount,
+        balance_after_cents: balance,
+        reference,
+        description: args.p_description ?? null,
+        metadata_json: args.p_metadata ?? {},
+        created_at: new Date().toISOString(),
+      });
+      return balance;
     }
-    const current = rows.get(id);
-    const count = Number(current?.count ?? 0);
-    if (count >= Number(args.p_limit)) {
-      return false;
-    }
-    rows.set(id, {
-      id,
-      scope: args.p_scope,
-      identity: args.p_identity,
-      count: count + 1,
-      expires_at: new Date(now + 120_000).toISOString(),
-    });
-    return true;
+
+    throw new Error(`RPC desconhecida: ${name}`);
   }
 
   async count(table: string): Promise<number> {

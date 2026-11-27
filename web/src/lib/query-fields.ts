@@ -26,5 +26,7 @@ export const queryFields: CrudField[] = [
     ],
   },
   { name: 'cost_cents', label: 'Custo (centavos)', type: 'number' },
+  { name: 'charged_cents', label: 'Cobrado (centavos)', type: 'number' },
+  { name: 'module_key', label: 'Módulo' },
   { name: 'error', label: 'Erro' },
 ];

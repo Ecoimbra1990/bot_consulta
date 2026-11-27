@@ -49,6 +49,8 @@ export function QueriesPage() {
       key_masked: toFormText(query.key_masked),
       status: query.status,
       cost_cents: toFormText(query.cost_cents),
+      charged_cents: toFormText(query.charged_cents),
+      module_key: toFormText(query.module_key),
       error: toFormText(query.error),
     });
   }
@@ -75,6 +77,8 @@ export function QueriesPage() {
           key_masked: formText(editing, 'key_masked') || null,
           status: formText(editing, 'status'),
           cost_cents: formNumber(editing, 'cost_cents') ?? 0,
+          charged_cents: formNumber(editing, 'charged_cents') ?? 0,
+          module_key: formText(editing, 'module_key') || null,
           error: formText(editing, 'error') || null,
         },
       });
@@ -123,7 +127,9 @@ export function QueriesPage() {
       ),
     },
     { header: 'Provedor', render: (query) => query.provider ?? '-' },
+    { header: 'Módulo', render: (query) => query.module_key ?? '-' },
     { header: 'Custo', render: (query) => formatCurrency(query.cost_cents) },
+    { header: 'Cobrado', render: (query) => formatCurrency(query.charged_cents ?? 0) },
     {
       header: 'Erro',
       render: (query) => <span className="max-w-xs truncate text-red-300" title={query.error ?? ''}>{query.error ?? '-'}</span>,

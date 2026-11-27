@@ -58,6 +58,17 @@ export function PaymentsPage() {
       ],
     },
     { name: 'amount_cents', label: 'Valor (centavos)', type: 'number' },
+    { name: 'credit_cents', label: 'Créditos (centavos)', type: 'number' },
+    {
+      name: 'kind',
+      label: 'Tipo',
+      type: 'select',
+      options: [
+        { value: 'pix', label: 'PIX' },
+        { value: 'subscription', label: 'Assinatura' },
+        { value: 'manual', label: 'Manual' },
+      ],
+    },
     {
       name: 'status',
       label: 'Status',
@@ -81,6 +92,8 @@ export function PaymentsPage() {
       id: payment.id,
       user_id: toFormText(payment.user_id),
       amount_cents: toFormText(payment.amount_cents),
+      credit_cents: toFormText(payment.credit_cents),
+      kind: toFormText(payment.kind || 'pix'),
       status: payment.status,
       external_id: toFormText(payment.external_id),
       external_reference: toFormText(payment.external_reference),
@@ -108,6 +121,8 @@ export function PaymentsPage() {
         patch: {
           user_id: formText(editing, 'user_id') || null,
           amount_cents: formNumber(editing, 'amount_cents') ?? 0,
+          credit_cents: formNumber(editing, 'credit_cents') ?? 0,
+          kind: formText(editing, 'kind') || 'pix',
           status: formText(editing, 'status'),
           external_id: formText(editing, 'external_id') || null,
           external_reference: formText(editing, 'external_reference') || null,
@@ -156,6 +171,8 @@ export function PaymentsPage() {
       ),
     },
     { header: 'Valor', render: (payment) => <span className="whitespace-nowrap">{formatCurrency(payment.amount_cents)}</span> },
+    { header: 'Créditos', render: (payment) => <span className="whitespace-nowrap">{formatCurrency(payment.credit_cents ?? 0)}</span> },
+    { header: 'Tipo', render: (payment) => payment.kind ?? '-' },
     {
       header: 'Status',
       render: (payment) => (

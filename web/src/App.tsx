@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthGuard } from './components/AuthGuard';
 import { Layout } from './components/Layout';
+import { CatalogPage } from './pages/CatalogPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DsrPage } from './pages/DsrPage';
 import { LoginPage } from './pages/LoginPage';
@@ -18,6 +19,7 @@ export default function App() {
       <Route path="/admin" element={<AuthGuard><Layout /></AuthGuard>}>
         <Route index element={<DashboardPage />} />
         <Route path="users" element={<UsersPage />} />
+        <Route path="catalog" element={<CatalogPage />} />
         <Route path="subscriptions" element={<SubscriptionsPage />} />
         <Route path="payments" element={<PaymentsPage />} />
         <Route path="queries" element={<QueriesPage />} />

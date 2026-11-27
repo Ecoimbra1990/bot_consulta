@@ -21,6 +21,7 @@ interface ManualForm {
 interface PlanForm {
   name: string;
   price_cents: string;
+  credit_cents: string;
   period_days: string;
   active: boolean;
 }
@@ -35,7 +36,8 @@ const initialManualForm: ManualForm = {
 const initialPlanForm: PlanForm = {
   name: '',
   price_cents: '',
-  period_days: '30',
+  credit_cents: '',
+  period_days: '0',
   active: true,
 };
 
@@ -59,9 +61,19 @@ const subscriptionFields: CrudField[] = [
 const planFields: CrudField[] = [
   { name: 'name', label: 'Nome' },
   { name: 'price_cents', label: 'Preço (centavos)', type: 'number' },
+  { name: 'credit_cents', label: 'Créditos (centavos)', type: 'number' },
   { name: 'period_days', label: 'Duração (dias)', type: 'number' },
   { name: 'queries_per_day', label: 'Consultas por dia', type: 'number' },
-  { name: 'active', label: 'Plano ativo', type: 'checkbox' },
+  {
+    name: 'kind',
+    label: 'Tipo',
+    type: 'select',
+    options: [
+      { value: 'package', label: 'Pacote' },
+      { value: 'legacy', label: 'Legado' },
+    ],
+  },
+  { name: 'active', label: 'Ativo', type: 'checkbox' },
 ];
 
 type UserSummary = Pick<User, 'id' | 'name' | 'email'>;
@@ -148,6 +160,7 @@ export function SubscriptionsPage() {
       await invokeAdmin('plan.create', {
         name: planForm.name.trim(),
         price_cents: Number(planForm.price_cents),
+        credit_cents: Number(planForm.credit_cents || planForm.price_cents),
         period_days: Number(planForm.period_days),
         active: planForm.active,
       });
@@ -178,7 +191,9 @@ export function SubscriptionsPage() {
       id: plan.id,
       name: toFormText(plan.name),
       price_cents: toFormText(plan.price_cents),
+      credit_cents: toFormText(plan.credit_cents),
       period_days: toFormText(plan.period_days),
+      kind: plan.kind,
       queries_per_day: toFormText(plan.queries_per_day),
       active: toFormBool(plan.active),
     });
@@ -235,8 +250,10 @@ export function SubscriptionsPage() {
         patch: {
           name: formText(editingPlan, 'name'),
           price_cents: formNumber(editingPlan, 'price_cents'),
+          credit_cents: formNumber(editingPlan, 'credit_cents'),
           period_days: formNumber(editingPlan, 'period_days'),
           queries_per_day: formNumber(editingPlan, 'queries_per_day'),
+          kind: formText(editingPlan, 'kind'),
           active: formBool(editingPlan, 'active'),
         },
       });
@@ -317,7 +334,8 @@ export function SubscriptionsPage() {
   const planColumns: TableColumn<Plan>[] = [
     { header: 'Nome', render: (plan) => <span className="font-medium text-white">{plan.name}</span> },
     { header: 'Preço', render: (plan) => formatCurrency(plan.price_cents) },
-    { header: 'Duração', render: (plan) => <span className="whitespace-nowrap">{plan.period_days} dias</span> },
+    { header: 'Créditos', render: (plan) => formatCurrency(plan.credit_cents ?? plan.price_cents) },
+    { header: 'Tipo', render: (plan) => plan.kind ?? 'package' },
     {
       header: 'Ativo',
       render: (plan) => (
@@ -341,8 +359,8 @@ export function SubscriptionsPage() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-white">Assinaturas</h1>
-        <p className="mt-1 text-sm text-slate-400">Assinaturas e planos disponíveis</p>
+        <h1 className="text-2xl font-bold text-white">Pacotes e assinaturas</h1>
+        <p className="mt-1 text-sm text-slate-400">Créditos de consulta e legado de assinaturas</p>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -390,7 +408,7 @@ export function SubscriptionsPage() {
         </section>
 
         <section className="rounded-lg border border-slate-800 bg-slate-900 p-5">
-          <h2 className="text-lg font-semibold text-white">Novo plano</h2>
+          <h2 className="text-lg font-semibold text-white">Novo pacote de créditos</h2>
           <form className="mt-4 space-y-4" onSubmit={handleCreatePlan}>
             <div>
               <label className={labelClass} htmlFor="plan-name">Nome</label>
@@ -402,8 +420,12 @@ export function SubscriptionsPage() {
                 <input id="plan-price" type="number" min="0" required className={inputClass} value={planForm.price_cents} onChange={(event) => setPlanField('price_cents', event.target.value)} />
               </div>
               <div>
+                <label className={labelClass} htmlFor="plan-credit">Créditos (centavos)</label>
+                <input id="plan-credit" type="number" min="0" required className={inputClass} value={planForm.credit_cents} onChange={(event) => setPlanField('credit_cents', event.target.value)} />
+              </div>
+              <div>
                 <label className={labelClass} htmlFor="plan-period">Duração (dias)</label>
-                <input id="plan-period" type="number" min="1" required className={inputClass} value={planForm.period_days} onChange={(event) => setPlanField('period_days', event.target.value)} />
+                <input id="plan-period" type="number" min="0" className={inputClass} value={planForm.period_days} onChange={(event) => setPlanField('period_days', event.target.value)} />
               </div>
             </div>
             <label className="flex items-center gap-2 text-sm text-slate-200">
@@ -415,7 +437,7 @@ export function SubscriptionsPage() {
               disabled={creatingPlan}
               className="rounded-md bg-sky-600 px-4 py-2 font-semibold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {creatingPlan ? 'Criando...' : 'Criar plano'}
+              {creatingPlan ? 'Criando...' : 'Criar pacote'}
             </button>
           </form>
         </section>
@@ -425,7 +447,7 @@ export function SubscriptionsPage() {
       {loadError && <p className="rounded-md bg-red-500/10 px-4 py-3 text-sm text-red-300">{loadError}</p>}
 
       <section className="space-y-4">
-        <h2 className="text-lg font-semibold text-white">Planos</h2>
+        <h2 className="text-lg font-semibold text-white">Pacotes e planos</h2>
         {loading ? (
           <p className="text-sm text-slate-400">Carregando...</p>
         ) : (

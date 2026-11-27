@@ -39,6 +39,58 @@ export async function fetchPayment(paymentId: string): Promise<Row> {
   return (await response.json()) as Row;
 }
 
+function notificationUrl(): string {
+  if (config.mercadoPago.notificationUrl) {
+    return config.mercadoPago.notificationUrl;
+  }
+  if (config.supabaseUrl) {
+    return `${config.supabaseUrl.replace(/\/$/, '')}/functions/v1/mercadopago-webhook`;
+  }
+  if (config.baseUrl) {
+    return `${config.baseUrl.replace(/\/$/, '')}/webhooks/mercadopago`;
+  }
+  return '';
+}
+
+export async function createPixPayment(input: {
+  externalReference: string;
+  title: string;
+  amountCents: number;
+  email?: string | null;
+  chatId?: string | number | null;
+}): Promise<Row> {
+  const email = input.email || config.mercadoPago.payerEmail;
+  if (!email) {
+    throw new Error('MERCADOPAGO_PAYER_EMAIL não configurado');
+  }
+  const body: Row = {
+    transaction_amount: Math.round(input.amountCents) / 100,
+    description: input.title,
+    external_reference: input.externalReference,
+    payment_method_id: 'pix',
+    payer: { email },
+    metadata: input.chatId ? { telegram_chat_id: String(input.chatId) } : {},
+  };
+  const url = notificationUrl();
+  if (url) {
+    body.notification_url = url;
+  }
+  const response = await fetch(`${config.mercadoPago.apiBase}/v1/payments`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.mercadoPago.accessToken}`,
+      'Content-Type': 'application/json',
+      'X-Idempotency-Key': input.externalReference,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) {
+    throw new Error(`Mercado Pago HTTP ${response.status}`);
+  }
+  return (await response.json()) as Row;
+}
+
 export async function createPreference(input: { externalReference: string; title: string; amountCents: number }): Promise<Row> {
   const baseUrl = config.baseUrl.replace(/\/$/, '');
   const body: Row = {

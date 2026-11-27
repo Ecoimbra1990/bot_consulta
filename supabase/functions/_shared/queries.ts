@@ -4,8 +4,10 @@ import { onlyDigits } from './validators.ts';
 import { maskCnpj, maskCpf, maskPhone, maskPlate } from './masking.ts';
 import { checkRateLimit } from './rate-limit.ts';
 import { APIBrasilAdapter } from './provider.ts';
+import { assertSafeMargin, resolvePrice, type QueryMode } from './pricing.ts';
 import { getRuntimeSettings } from './settings.ts';
-import type { Row, Store } from './types.ts';
+import type { ProviderResult, Row, Store } from './types.ts';
+import { creditWallet, debitWallet, InsufficientBalanceError } from './wallet.ts';
 
 function maskKey(keyType: string, value: string): string {
   if (keyType === 'cpf') {
@@ -75,7 +77,13 @@ function validate(entityInput: string, keyTypeInput: string, keyValueInput: stri
   throw new Error('Entidade inválida');
 }
 
-async function callProvider(provider: APIBrasilAdapter, entity: string, keyType: string, keyValue: string): Promise<Row> {
+async function callProvider(
+  provider: APIBrasilAdapter,
+  entity: string,
+  keyType: string,
+  keyValue: string,
+  mode: QueryMode,
+): Promise<ProviderResult> {
   if (entity === 'PF') {
     return provider.queryPfCpf(keyValue);
   }
@@ -86,7 +94,7 @@ async function callProvider(provider: APIBrasilAdapter, entity: string, keyType:
     return provider.queryPhone(keyValue);
   }
   if (keyType === 'placa') {
-    return provider.queryVehiclePlate(keyValue);
+    return provider.queryVehiclePlate(keyValue, mode === 'full');
   }
   if (keyType === 'renavam') {
     throw new Error('Consulta por Renavam exige o CPF do proprietário');
@@ -99,15 +107,17 @@ export interface RunQueryInput {
   entity: string;
   keyType: string;
   keyValue: string;
+  mode?: QueryMode;
   provider?: APIBrasilAdapter;
 }
 
 export async function runQuery(store: Store, input: RunQueryInput): Promise<Row> {
+  const mode = input.mode ?? 'basic';
   const { entity, keyType, keyValue } = validate(input.entity, input.keyType, input.keyValue);
   if (!(await checkRateLimit(store, 'query', input.userId))) {
     throw new PermissionError('Limite de consultas por minuto excedido');
   }
-  const keyHash = await sha256Hex(`${entity}:${keyType}:${keyValue}`);
+  const keyHash = await sha256Hex(`${entity}:${keyType}:${mode}:${keyValue}`);
   const now = new Date().toISOString();
   const cached = await store.selectById('query_cache', keyHash, 'key_hash');
   if (cached && !cached.is_mock && cached.expires_at && new Date(cached.expires_at).getTime() > Date.now()) {
@@ -120,6 +130,8 @@ export async function runQuery(store: Store, input: RunQueryInput): Promise<Row>
       provider: 'cache',
       status: 'completed',
       cost_cents: 0,
+      charged_cents: 0,
+      module_key: cached.module_key ?? null,
       error: null,
       created_at: now,
     });
@@ -136,6 +148,9 @@ export async function runQuery(store: Store, input: RunQueryInput): Promise<Row>
     return query;
   }
 
+  const price = await resolvePrice(store, entity, keyType, mode);
+  assertSafeMargin(price);
+
   const query = await store.insert('queries', {
     user_id: input.userId,
     entity,
@@ -144,15 +159,56 @@ export async function runQuery(store: Store, input: RunQueryInput): Promise<Row>
     key_masked: maskKey(keyType, keyValue),
     provider: null,
     status: 'pending',
-    cost_cents: 0,
+    cost_cents: price.costCents,
+    charged_cents: price.priceCents,
+    module_key: price.moduleKey,
     error: null,
     created_at: now,
   });
 
-  const result = await callProvider(input.provider ?? new APIBrasilAdapter(), entity, keyType, keyValue);
+  try {
+    await debitWallet(store, {
+      userId: input.userId,
+      amountCents: price.priceCents,
+      reference: `query:${query.id}`,
+      description: `Consulta ${price.moduleKey}`,
+      metadata: { query_id: query.id, module_key: price.moduleKey, mode },
+    });
+  } catch (error) {
+    if (error instanceof InsufficientBalanceError) {
+      await store.update('queries', query.id, { status: 'failed', error: error.message, charged_cents: 0 });
+    }
+    throw error;
+  }
+
+  const refund = async (reason: string): Promise<Row> => {
+    try {
+      await creditWallet(store, {
+        userId: input.userId,
+        amountCents: price.priceCents,
+        reference: `refund:${query.id}`,
+        description: 'Estorno de consulta não concluída',
+        metadata: { query_id: query.id, reason },
+      }, 'refund');
+    } catch {
+      return (await store.selectById('queries', query.id)) ?? query;
+    }
+    return (await store.update('queries', query.id, {
+      status: 'failed',
+      error: reason,
+      charged_cents: 0,
+      provider: null,
+    })) ?? query;
+  };
+
+  let result: ProviderResult;
+  try {
+    result = await callProvider(input.provider ?? new APIBrasilAdapter(), entity, keyType, keyValue, mode);
+  } catch (error) {
+    return refund(error instanceof Error ? error.message : 'Falha de comunicação com a APIBrasil');
+  }
   if (!result.ok) {
-    await store.update('queries', query.id, { status: 'failed', error: result.error || 'Erro na APIBrasil', provider: result.provider });
-    return (await store.selectById('queries', query.id)) ?? query;
+    return refund(result.error || 'Erro na APIBrasil');
   }
 
   const rawEncrypted = await encryptText(JSON.stringify(result.raw));
@@ -161,7 +217,14 @@ export async function runQuery(store: Store, input: RunQueryInput): Promise<Row>
     { query_id: query.id, raw_encrypted: rawEncrypted, normalized_json: result.normalized, fetched_at: now },
     'query_id',
   );
-  await store.update('queries', query.id, { status: 'completed', provider: result.provider, cost_cents: result.cost_cents, error: null });
+  await store.update('queries', query.id, {
+    status: 'completed',
+    provider: result.provider,
+    cost_cents: result.cost_cents || price.costCents,
+    charged_cents: price.priceCents,
+    module_key: price.moduleKey,
+    error: null,
+  });
   if (!result.raw?.mock) {
     const settings = await getRuntimeSettings(store);
     await store.upsert(
@@ -170,6 +233,7 @@ export async function runQuery(store: Store, input: RunQueryInput): Promise<Row>
         key_hash: keyHash,
         entity,
         key_type: keyType,
+        module_key: price.moduleKey,
         raw_encrypted: rawEncrypted,
         normalized_json: result.normalized,
         is_mock: false,

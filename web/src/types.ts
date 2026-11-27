@@ -8,6 +8,7 @@ export interface User {
   auth_user_id: string | null;
   role: 'admin' | 'user';
   status: 'active' | 'blocked' | 'pending';
+  wallet_balance_cents: number;
   consent_version: string | null;
   consent_at: string | null;
   anonymized_at: string | null;
@@ -18,7 +19,9 @@ export interface Plan {
   id: string;
   name: string;
   price_cents: number;
+  credit_cents: number;
   period_days: number;
+  kind: 'package' | 'legacy';
   queries_per_day: number | null;
   active: boolean;
   created_at: string;
@@ -44,6 +47,10 @@ export interface Payment {
   subscription_id: string | null;
   provider: string;
   amount_cents: number;
+  credit_cents: number;
+  kind: string;
+  telegram_chat_id: string | null;
+  qr_code: string | null;
   status: string;
   external_id: string | null;
   external_reference: string | null;
@@ -66,6 +73,8 @@ export interface Query {
   provider: string | null;
   status: 'pending' | 'completed' | 'failed';
   cost_cents: number;
+  charged_cents: number;
+  module_key: string | null;
   error: string | null;
   created_at: string;
 }
@@ -76,6 +85,34 @@ export interface DsrRequest {
   status: string;
   resolved_at: string | null;
   resolved_by: string | null;
+  created_at: string;
+}
+
+export interface WalletTransaction {
+  id: string;
+  user_id: string;
+  kind: 'credit' | 'debit' | 'refund' | 'bonus' | 'manual';
+  amount_cents: number;
+  balance_after_cents: number;
+  reference: string | null;
+  description: string | null;
+  created_at: string;
+}
+
+export interface ApiModule {
+  module_key: string;
+  label: string | null;
+  endpoint: string | null;
+  cost_cents: number;
+  balance_cents: number | null;
+  source: string;
+  updated_at: string;
+}
+
+export interface TelegramLink {
+  telegram_id: string;
+  user_id: string;
+  username: string | null;
   created_at: string;
 }
 
