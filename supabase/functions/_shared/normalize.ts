@@ -36,13 +36,18 @@ function itemsOf(value: unknown): unknown[] {
 function relatedOf(value: unknown): Row[] {
   return itemsOf(value)
     .filter((item): item is Row => item !== null && typeof item === 'object' && !Array.isArray(item))
-    .map((item) => ({
-      nome: scalar(firstDefined(item.nome, item.nm_completo, item.nome_completo, item.nomeCompleto)),
-      documento: item.documento ?? null,
-      cpf: item.cpf ?? null,
-      vinculo: scalar(firstDefined(item.vinculo, item.ds_vinculo, item.parentesco, item.tipo, item.relacao)),
-      detalhes: item,
-    }));
+    .map((item) => {
+      const cpf = firstDefined(item.cpf, item.nu_cpf, item.numero_cpf);
+      const documento = firstDefined(item.documento, item.nu_documento, item.num_documento);
+      const documentDigits = String(documento ?? '').replace(/\D/g, '');
+      return {
+        nome: scalar(firstDefined(item.nome, item.nm_completo, item.nome_completo, item.nomeCompleto)),
+        documento: documento ?? null,
+        cpf: cpf ?? (documentDigits.length === 11 ? documento : null),
+        vinculo: scalar(firstDefined(item.vinculo, item.ds_vinculo, item.parentesco, item.grau, item.campo, item.tipo, item.relacao)),
+        detalhes: item,
+      };
+    });
 }
 
 function payload(raw: Row): Row {
@@ -121,7 +126,7 @@ export function normalizePf(provider: string, raw: Row, cpf: string): Row {
     telefones: phones,
     enderecos: firstDefined(itemsOf(data.pesquisa_enderecos), cadastral.somente_endereco, cadastral.enderecos, data.enderecos, []),
     emails: emails.map((email) => String(email)),
-    parentes: relatedOf(firstDefined(data.dados_parentes, cadastral.dados_parentes)),
+    parentes: relatedOf(firstDefined(data.dados_parentes, cadastral.dados_parentes, data.parentescos, cadastral.parentescos)),
     pessoas_contato: relatedOf(firstDefined(data.pessoas_contato, cadastral.pessoas_contato)),
     moradores_mesmo_domicilio: relatedOf(firstDefined(data.residentes_mesmo_domicilio, cadastral.residentes_mesmo_domicilio)),
     vinculos_trabalho: relatedOf(firstDefined(data.trabalha_trabalhou, cadastral.trabalha_trabalhou)),

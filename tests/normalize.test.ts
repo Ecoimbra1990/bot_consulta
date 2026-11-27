@@ -53,6 +53,30 @@ describe('normalizadores da APIBrasil', () => {
     expect(result.vinculos_trabalho).toHaveLength(1);
   });
 
+  it('normaliza parentes no formato da APIBrasil com campo, grau e documento', () => {
+    const result = normalizePf(
+      'apibrasil',
+      {
+        data: {
+          dados: {
+            nome: { conteudo: { nome: 'PESSOA EXEMPLO' } },
+            dados_parentes: {
+              conteudo: [
+                { nome: 'MAE EXEMPLO', campo: 'mae', documento: '11144477735' },
+                { nome: 'PAI EXEMPLO', grau: 'Pai', cpf: '52998224725' },
+              ],
+            },
+          },
+        },
+      },
+      '52998224725',
+    );
+
+    expect(result.parentes).toHaveLength(2);
+    expect(result.parentes[0]).toMatchObject({ nome: 'MAE EXEMPLO', vinculo: 'mae', cpf: '11144477735' });
+    expect(result.parentes[1]).toMatchObject({ nome: 'PAI EXEMPLO', vinculo: 'Pai', cpf: '52998224725' });
+  });
+
   it('normaliza veículo e mantém documento do proprietário completo', () => {
     const result = normalizeVehicle(
       'apibrasil',

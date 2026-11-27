@@ -83,6 +83,7 @@ export class APIBrasilAdapter implements QueryProvider {
             },
             telefone_celular: { telefones: [{ ddd: '11', num_telefone: '999991234' }] },
             somente_endereco: [{ cidade: 'CIDADE EXEMPLO', uf: 'UF' }],
+            dados_parentes: { conteudo: [{ nome: 'PARENTE EXEMPLO', campo: 'mae', documento: '11144477735' }] },
             participacao_em_empresas: [],
           },
         },

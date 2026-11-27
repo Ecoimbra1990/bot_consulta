@@ -66,7 +66,6 @@ function text(value: unknown, fallback = ''): string {
 const CANONICAL_MODULE_KEYS = new Set(['pf-cpf', 'cnpj', 'telefone', 'placa-basica', 'placa-completa', 'frota-cpf', 'renavam']);
 
 const VERIFICA_MODULE_KEYS: Record<string, string> = {
-  cpf_dados_completos: 'pf-cpf',
   cnpj_dados_basicos: 'cnpj',
   consulta_placa: 'placa-basica',
   veicular_completa: 'placa-completa',

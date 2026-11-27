@@ -21,7 +21,7 @@ export interface CatalogModuleDefault {
 }
 
 export const CATALOG_MODULE_DEFAULTS: Record<string, CatalogModuleDefault> = {
-  'pf-cpf': { entity: 'PF', keyType: 'cpf', mode: 'basic', datasetKey: 'cpf_dados_completos', serviceName: 'dados-cadastrais', menuOrder: 10 },
+  'pf-cpf': { entity: 'PF', keyType: 'cpf', mode: 'basic', datasetKey: '', serviceName: 'dados-cadastrais', menuOrder: 10 },
   cnpj: { entity: 'EMPRESA', keyType: 'cnpj', mode: 'basic', datasetKey: 'cnpj_dados_basicos', serviceName: 'cnpj', menuOrder: 20 },
   telefone: { entity: 'TELEFONE', keyType: 'telefone', mode: 'basic', datasetKey: '', serviceName: 'cpf-cnpj-pelo-telefone', menuOrder: 30 },
   'placa-basica': { entity: 'VEICULO', keyType: 'placa', mode: 'basic', datasetKey: 'consulta_placa', serviceName: 'consulta-placa', menuOrder: 40 },

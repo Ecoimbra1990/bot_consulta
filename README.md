@@ -1,6 +1,6 @@
 # Bot Consulta (Supabase + Cloudflare Workers)
 
-MVP de consultas via Telegram usando **Verifica Online como provedor preferencial** para Pessoa Física (CPF), Empresas (CNPJ) e Veículos por placa, com **APIBrasil** para Telefone, Renavam e frota por CPF, painel admin web, assinaturas via Mercado Pago e retenção de dados conforme LGPD.
+MVP de consultas via Telegram usando **APIBrasil para Pessoa Física (CPF)** — incluindo parentes, contatos e vínculos —, **Verifica Online para CNPJ e Veículos por placa**, além de **APIBrasil** para Telefone, Renavam e frota por CPF, painel admin web, assinaturas via Mercado Pago e retenção de dados conforme LGPD.
 
 ## Arquitetura
 
@@ -72,11 +72,12 @@ Se o projeto for Cloudflare Pages clássico, mantenha apenas build/output (`dist
 
 ## Provedores
 
-A Verifica Online é usada sempre que há dataset equivalente (docs em https://docs.verifica-online.com.br/docs/verifica-online-api/introducao):
+A Verifica Online é usada quando há dataset equivalente (docs em https://docs.verifica-online.com.br/docs/verifica-online-api/introducao):
 
-- CPF: `POST /datasets/cpf_dados_completos/queries`.
 - Empresa: `POST /datasets/cnpj_dados_basicos/queries`.
 - Veículo por placa: `POST /datasets/consulta_placa/queries` (básica) ou `/datasets/veicular_completa/queries` (completa).
+
+O CPF é sempre consultado na APIBrasil com `tipo=dados-cadastrais`, porque o dataset `cpf_dados_completos` da Verifica Online não contém parentesco. A resposta inclui a seção "Parentes" com nome, documento/CPF e vínculo (ou grau/campo) informados.
 
 O `sync-api-catalog` lê `GET /datasets` da Verifica Online e substitui os módulos correspondentes no catálogo, preservando o preço real em `api_modules.cost_cents`. Requisições usam `Authorization: Bearer VERIFICA_ONLINE_API_KEY` e `Idempotency-Key` determinística por dia; respostas `processing` são consultadas em `GET /queries/{request_id}` e cobranças `402` viram "saldo insuficiente".
 

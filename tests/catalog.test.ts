@@ -65,10 +65,10 @@ describe('sincronização do catálogo de consultas', () => {
     ]);
 
     const cpf = rows.find((row) => row.module_key === 'pf-cpf');
-    expect(cpf?.endpoint).toBe('/datasets/cpf_dados_completos/queries');
-    expect(cpf?.cost_cents).toBe(499);
-    expect(cpf?.source).toBe('verifica-online');
-    expect((cpf?.payload_json as Record<string, unknown>).dataset_key).toBe('cpf_dados_completos');
+    expect(cpf?.endpoint).toBe('/consulta/cpf/credits');
+    expect(cpf?.cost_cents).toBe(1290);
+    expect(cpf?.source).toBe('apibrasil');
+    expect((cpf?.payload_json as Record<string, unknown>).service_name).toBe('dados-cadastrais');
 
     const cnpj = rows.find((row) => row.module_key === 'cnpj');
     expect(cnpj?.endpoint).toBe('/datasets/cnpj_dados_basicos/queries');
@@ -92,19 +92,20 @@ describe('sincronização do catálogo de consultas', () => {
 
     const price = await resolvePrice(store, 'PF', 'cpf', 'basic');
     expect(price.source).toBe('catalog');
-    expect(price.provider).toBe('verifica-online');
-    expect(price.costCents).toBe(499);
-    expect(price.priceCents).toBe(1000);
-    expect(price.serviceName).toBe('cpf_dados_completos');
+    expect(price.provider).toBe('apibrasil');
+    expect(price.costCents).toBe(1290);
+    expect(price.priceCents).toBe(2580);
+    expect(price.serviceName).toBe('dados-cadastrais');
+    expect(price.datasetKey).toBe('');
   });
 
-  it('bloqueia módulo Verifica sem custo catalogado quando a chave está ativa', async () => {
-    vi.stubEnv('VERIFICA_ONLINE_API_KEY', 'voa_test_key');
+  it('bloqueia módulo sem custo catalogado quando o catálogo da APIBrasil está ativo', async () => {
+    vi.stubEnv('APIBRASIL_CATALOG_URL', 'https://app.apibrasil.io/precos');
     const { assertSafeMargin, resolvePrice } = await import('../supabase/functions/_shared/pricing.ts');
 
     const price = await resolvePrice(new MemoryStore(), 'PF', 'cpf', 'basic');
 
-    expect(price.provider).toBe('verifica-online');
+    expect(price.provider).toBe('apibrasil');
     expect(price.source).toBe('fallback');
     expect(() => assertSafeMargin(price)).toThrow(/sem custo catalogado/);
   });

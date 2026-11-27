@@ -49,10 +49,12 @@ const MODULE_KEYS: Record<string, string> = {
   'VEICULO_FROTA:cpf:basic': 'frota-cpf',
 };
 
-const VERIFICA_MODULES = new Set(['pf-cpf', 'cnpj', 'placa-basica', 'placa-completa']);
+const VERIFICA_MODULES = new Set(['cnpj', 'placa-basica', 'placa-completa']);
+
+const PF_CPF_SERVICE_NAME = 'dados-cadastrais';
 
 const DEFAULT_SERVICE_NAMES: Record<string, string> = {
-  'pf-cpf': 'cpf_dados_completos',
+  'pf-cpf': PF_CPF_SERVICE_NAME,
   cnpj: 'cnpj_dados_basicos',
   telefone: 'cpf-cnpj-pelo-telefone',
   'placa-basica': 'consulta_placa',
@@ -81,7 +83,7 @@ export function moduleKeyFor(entity: string, keyType: string, mode: QueryMode): 
 export function endpointFor(entity: string, keyType: string, mode: QueryMode): string {
   const api = config.apiBrasil;
   const key = moduleKeyFor(entity, keyType, mode);
-  if (key === 'pf-cpf') return '/datasets/cpf_dados_completos/queries';
+  if (key === 'pf-cpf') return api.pfPath;
   if (key === 'cnpj') return '/datasets/cnpj_dados_basicos/queries';
   if (key === 'placa-basica') return '/datasets/consulta_placa/queries';
   if (key === 'placa-completa') return '/datasets/veicular_completa/queries';
@@ -148,16 +150,26 @@ export async function resolvePrice(
   const moduleKey = preferredModuleKey ?? canonicalKey;
   const costCents = Math.max(0, Number.parseInt(String(row?.cost_cents ?? 0), 10) || 0);
   const fallback = fallbackPriceFor(entity, keyType, mode);
-  const selectedEndpoint = normalizeEndpoint(row?.endpoint) || endpoint;
-  const serviceName = rowServiceName(row, moduleKey);
+  const pfCpf = entity.toUpperCase() === 'PF' && keyType.toLowerCase() === 'cpf';
+  const catalogEndpoint = normalizeEndpoint(row?.endpoint);
+  const selectedEndpoint = pfCpf
+    ? (catalogEndpoint.startsWith('/consulta/') ? catalogEndpoint : endpoint)
+    : catalogEndpoint || endpoint;
+  const serviceName = pfCpf && row?.source !== 'apibrasil'
+    ? PF_CPF_SERVICE_NAME
+    : rowServiceName(row, moduleKey);
   const payload = row?.payload_json !== null && typeof row?.payload_json === 'object' ? row?.payload_json as Row : {};
-  const datasetKey = String(row?.dataset_key ?? payload.dataset_key ?? '').trim()
-    || datasetFromEndpoint(selectedEndpoint)
-    || DEFAULT_SERVICE_NAMES[moduleKey]
-    || '';
-  const provider: QueryProviderName = row?.source === 'verifica-online' || (!row && VERIFICA_MODULES.has(moduleKey))
-    ? 'verifica-online'
-    : 'apibrasil';
+  const datasetKey = pfCpf
+    ? ''
+    : String(row?.dataset_key ?? payload.dataset_key ?? '').trim()
+      || datasetFromEndpoint(selectedEndpoint)
+      || DEFAULT_SERVICE_NAMES[moduleKey]
+      || '';
+  const provider: QueryProviderName = pfCpf
+    ? 'apibrasil'
+    : row?.source === 'verifica-online' || (!row && VERIFICA_MODULES.has(moduleKey))
+      ? 'verifica-online'
+      : 'apibrasil';
 
   if (costCents > 0) {
     const withMargin = Math.ceil((costCents * config.pricingMultiplier) / 10) * 10;
