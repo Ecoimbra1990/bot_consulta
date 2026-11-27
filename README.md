@@ -1,65 +1,101 @@
-# Bot Consulta (Firebase + Telegram + Admin Web)
+# Bot Consulta (Supabase + Cloudflare Workers)
 
-MVP de consultas via Telegram usando **APIBrasil como único provedor** para Pessoa Física (CPF), Veículos (placa/Renavam/CPF atrelado), Telefone e Empresas (CNPJ), com painel admin web, assinaturas via Mercado Pago e retenção de dados conforme LGPD, hospedado no **Firebase**.
+MVP de consultas via Telegram usando **Verifica Online como provedor preferencial** para Pessoa Física (CPF), Empresas (CNPJ) e Veículos por placa, com **APIBrasil** para Telefone, Renavam e frota por CPF, painel admin web, assinaturas via Mercado Pago e retenção de dados conforme LGPD.
 
-## Arquitetura Firebase
-- **Firebase Functions (Python 2nd gen)**: webhooks Telegram/Mercado Pago, painel admin, jobs agendados de expiração e expurgo.
-- **Firestore**: usuários, planos, assinaturas, pagamentos, consultas, resultados, cache, consentimento, DSR, auditoria, sessões do bot e limitadores.
-- **Firebase Hosting**: página inicial e rewrites para Functions (`/admin/**`, `/webhooks/**`, `/health`).
-- **Cloud Scheduler**: expiração diária de assinaturas e expurgo de dados sensíveis.
+## Arquitetura
+
+- **Supabase Edge Functions (Deno/TypeScript)**: webhooks Telegram/Mercado Pago, API admin, `health`, expiração de assinaturas e expurgo de dados.
+- **Postgres + RLS**: usuários, planos, assinaturas, pagamentos, consultas, resultados, cache, consentimento, DSR, auditoria, sessões do bot e limitadores. service role fica apenas no backend.
+- **React + Vite + TypeScript + Tailwind**: painel administrativo servido como SPA estática via Cloudflare Workers Static Assets (`workers.dev`).
+- **pg_cron**: expiração diária de assinaturas e retenção de dados.
 
 ## Estrutura
-- `functions/main.py`: entrypoints Firebase Functions.
-- `functions/app/bot/`: handlers Telegram e storage de FSM no Firestore.
-- `functions/app/admin/`: painel admin Flask/Jinja2 com CSRF.
-- `functions/app/providers/`: adapter único da APIBrasil e normalização tipada.
-- `functions/app/services/`: regras de negócio, billing, entitlement, consultas, LGPD e rate limit.
-- `functions/app/db/repositories.py`: acesso Firestore.
-- `firebase.json`, `firestore.rules`, `firestore.indexes.json`: config Firebase.
 
-## Setup local (Firebase Emulator)
-1. Instale Firebase CLI e Python 3.11+.
-2. `cd functions && python -m venv venv && venv\Scripts\activate && pip install -r requirements.txt`
-3. Copie `functions/.env.example` para `functions/.env` e preencha os valores.
-4. Na raiz: `firebase emulators:start`
-5. Admin: URL do Hosting/Function emulator em `/admin/login`.
+- `supabase/migrations/`: schema, funções, índices, RLS, cron e seed.
+- `supabase/functions/`: Edge Functions em Deno/TypeScript.
+- `supabase/functions/_shared/`: regras de negócio compartilhadas (crypto, billing, queries, DSR, provider, normalização).
+- `web/`: SPA administrativa e `wrangler.jsonc` dos Workers Static Assets.
+- `scripts/migrate/`: migração Firestore → Postgres com re-encriptação Fernet → AES-GCM.
+- `tests/`: testes Vitest das regras portadas.
+
+## Setup local
+
+1. Instale Node 20+, npm, Docker e Supabase CLI.
+2. `npm install` na raiz.
+3. Copie `.env.example` para `.env` e `web/.env.example` para `web/.env`; preencha os valores locais.
+4. `supabase start` e `supabase db reset`.
+5. `supabase functions serve --env-file .env`.
+6. `npm run dev` para abrir o painel em `http://localhost:5173`.
+7. Crie o usuário admin no Supabase Auth com `app_metadata: { "role": "admin" }` e e-mail igual a `ADMIN_EMAIL`.
+
+## Migração do Firestore
+
+1. Preencha `FIREBASE_SERVICE_ACCOUNT_JSON` (ou use `GOOGLE_APPLICATION_CREDENTIALS`), `FERNET_KEY`, `FERNET_PREVIOUS_KEYS`, `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY`.
+2. Execute `npm run migrate --workspace bot-consulta-migrate`.
+3. O script gera IDs determinísticos a partir dos IDs legados e imprime as contagens finais por tabela.
+
+Senhas bcrypt não são importáveis: recrie o usuário admin pelo Auth Admin API.
 
 ## Deploy
-1. `firebase login`
-2. Ajuste `.firebaserc` com seu project id.
-3. Configure segredos (recomendado):
-   - `firebase functions:secrets:set SECRET_KEY`
-   - `firebase functions:secrets:set FERNET_KEY`
-   - `firebase functions:secrets:set ADMIN_EMAIL`
-   - `firebase functions:secrets:set ADMIN_PASSWORD`
-   - `firebase functions:secrets:set TELEGRAM_BOT_TOKEN`
-   - `firebase functions:secrets:set TELEGRAM_WEBHOOK_SECRET`
-   - `firebase functions:secrets:set MERCADOPAGO_ACCESS_TOKEN`
-   - `firebase functions:secrets:set MERCADOPAGO_WEBHOOK_SECRET`
-   - `firebase functions:secrets:set APIBRASIL_TOKEN`
-4. Opcionalmente defina `FERNET_PREVIOUS_KEYS` no ambiente para rotação de chaves.
-5. `firebase deploy`
 
-Em produção, `SECRET_KEY`, `ADMIN_PASSWORD`, `TELEGRAM_WEBHOOK_SECRET`, `FERNET_KEY` e `APIBRASIL_TOKEN` são obrigatórios; valores `change-me` e modo mock são rejeitados.
+### Supabase
+
+1. `supabase link --project-ref SEU_PROJECT_REF` e `supabase db push`.
+2. Configure os segredos com `supabase secrets set NOME=valor` para todas as variáveis de runtime do `.env.example`, incluindo `ALLOWED_ORIGINS` para o domínio do painel.
+3. Registre `project_url` e `cron_secret_key` no Vault para o pg_cron.
+4. Faça deploy das funções:
+   - `supabase functions deploy health`
+   - `supabase functions deploy telegram-webhook`
+   - `supabase functions deploy mercadopago-webhook`
+   - `supabase functions deploy admin-api`
+   - `supabase functions deploy expire-subscriptions`
+   - `supabase functions deploy retention-purge`
+   - `supabase functions deploy sync-api-catalog`
+
+### Cloudflare Workers (workers.dev)
+
+- Root directory: `web`.
+- Framework preset: Vite.
+- Build command: `npm run build`.
+- Deploy command: `npm run deploy` (nunca deixe vazio nem use `None`).
+- Build output directory: `dist`.
+- `web/wrangler.jsonc` aponta `assets.directory` para `./dist` e usa `not_found_handling: single-page-application`.
+- Variáveis: `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY`.
+- URL esperada: `https://bot-consulta.ankecs.workers.dev`.
+
+Se o projeto for Cloudflare Pages clássico, mantenha apenas build/output (`dist`) e use `true` como deploy command; não combine as duas configurações no mesmo projeto.
 
 ## Webhooks
-- Telegram: aponte para `https://us-central1-consulta-fc363.cloudfunctions.net/webhooks/webhooks/telegram` (ou rewrite Hosting `/webhooks/telegram`). Configure secret token.
-- Mercado Pago: aponte para `https://us-central1-consulta-fc363.cloudfunctions.net/webhooks/webhooks/mercadopago`. Configure `MERCADOPAGO_WEBHOOK_SECRET` para validar a assinatura do webhook.
 
-## Provedor APIBrasil
-Os caminhos e `tipo` seguem a documentação oficial em https://doc.apibrasil.io/:
-- CPF: `POST /consulta/cpf/credits` com `tipo=cpf-cadastral`.
-- Veículo por placa: `POST /consulta/veiculos/credits` com `tipo=nacional`.
+- Telegram: aponte para a URL de `telegram-webhook` e configure o header `X-Telegram-Bot-Api-Secret-Token` com `TELEGRAM_WEBHOOK_SECRET`.
+- Mercado Pago: aponte para a URL de `mercadopago-webhook` e configure `MERCADOPAGO_WEBHOOK_SECRET` para validar `x-signature`.
+
+## Provedores
+
+A Verifica Online é usada sempre que há dataset equivalente (docs em https://docs.verifica-online.com.br/docs/verifica-online-api/introducao):
+
+- CPF: `POST /datasets/cpf_dados_completos/queries`.
+- Empresa: `POST /datasets/cnpj_dados_basicos/queries`.
+- Veículo por placa: `POST /datasets/consulta_placa/queries` (básica) ou `/datasets/veicular_completa/queries` (completa).
+
+O `sync-api-catalog` lê `GET /datasets` da Verifica Online e substitui os módulos correspondentes no catálogo, preservando o preço real em `api_modules.cost_cents`. Requisições usam `Authorization: Bearer VERIFICA_ONLINE_API_KEY` e `Idempotency-Key` determinística por dia; respostas `processing` são consultadas em `GET /queries/{request_id}` e cobranças `402` viram "saldo insuficiente".
+
+A APIBrasil permanece nos fluxos sem dataset equivalente (docs em https://doc.apibrasil.io/):
+
 - Frota por CPF: `POST /consulta/veiculos/credits` com `tipo=frota-pf`.
-- Renavam: a APIBrasil não expõe consulta direta por Renavam; o bot pede o CPF do proprietário, consulta a frota e filtra o Renavam informado.
-- Telefone: `POST /consulta/cpf-cnpj-pelo-telefone/credits` com `tipo=cpf-cnpj-pelo-telefone`, enriquecido com `POST /consulta/telefone/credits` (`tipo=telefone-operadora`).
-- Empresa: `POST /consulta/cnpj/credits` com `tipo=cnpj-receita`.
+- Renavam: a APIBrasil não expõe consulta direta; o bot pede o CPF do proprietário, consulta a frota e filtra o Renavam informado.
+- Telefone: `POST /consulta/cpf-cnpj-pelo-telefone/credits`, enriquecido com `POST /consulta/telefone/credits`.
 
-Sem token e com `APIBRASIL_MODE_MOCK=true` em dev, o adapter retorna dados fictícios no mesmo formato da API; em produção isso é bloqueado. Antes de usar em produção, valide a resposta com `homolog: true`, sem cobrança, usando os documentos de teste da documentação.
+Sem token e com `APIBRASIL_MODE_MOCK=true` em dev, o adapter da APIBrasil retorna dados fictícios; isso é bloqueado em produção.
 
 ## LGPD
-Consentimento versionado é exigido no `/start`; `/meusdados` exporta os dados do titular e `/excluirmeusdados` abre uma solicitação revisada no painel admin. O job diário de retenção remove resultados crus após `RAW_RETENTION_DAYS`, preservando trilha de auditoria e registros financeiros. A base legal e a política de privacidade devem ser validadas juridicamente antes de produção.
+
+Consentimento versionado é exigido no `/start`; `/meusdados` exporta os dados do titular e `/excluirmeusdados` abre uma solicitação revisada no painel. O job de retenção remove resultados crus após `RAW_RETENTION_DAYS`, preservando auditoria e registros financeiros. Valide a base legal e a política de privacidade juridicamente antes de produção.
 
 ## Testes
-- `python -m pytest -q` na raiz.
-- Para integração local: `firebase emulators:exec --only functions,firestore "python -m pytest -q"`.
+
+- `npm run test`
+- `npm run typecheck`
+- `npm run lint`
+- `npm run build`
+- `supabase test db` quando o Supabase CLI estiver disponível.

@@ -1,0 +1,14 @@
+create index if not exists idx_subscriptions_user_status_ends_at on public.subscriptions (user_id, status, ends_at);
+create index if not exists idx_subscriptions_status_ends_at on public.subscriptions (status, ends_at);
+create index if not exists idx_queries_user_created_at on public.queries (user_id, created_at desc);
+create index if not exists idx_queries_entity_key_type_key_hash on public.queries (entity, key_type, key_hash);
+create index if not exists idx_queries_status_created_at on public.queries (status, created_at);
+create index if not exists idx_payments_user_created_at on public.payments (user_id, created_at desc);
+create index if not exists idx_payments_status_created_at on public.payments (status, created_at desc);
+create index if not exists idx_query_results_fetched_at on public.query_results (fetched_at);
+create index if not exists idx_users_telegram_id on public.users (telegram_id);
+create index if not exists idx_users_status_created_at on public.users (status, created_at desc);
+create index if not exists idx_audit_logs_created_at on public.audit_logs (created_at desc);
+create index if not exists idx_audit_logs_actor_user_id_created_at on public.audit_logs (actor_user_id, created_at desc);
+create index if not exists idx_dsr_requests_status_created_at on public.dsr_requests (status, created_at desc);
+create index if not exists idx_rate_limits_expires_at on public.rate_limits (expires_at);
